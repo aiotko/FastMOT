@@ -24,6 +24,7 @@ class Protocol(Enum):
 class VideoIO:
     def __init__(self, size, input_uri,
                  output_uri=None,
+                 output_rtsp=None,
                  resolution=(1920, 1080),
                  frame_rate=30,
                  buffer_size=10,
@@ -42,6 +43,8 @@ class VideoIO:
             or HTTP live stream (e.g. 'http://<user>:<password>@<ip>:<port>/<path>')
         output_uri : str, optionals
             URI to an output video file.
+        output_rtsp : str, optional
+            RTSP Server URI to output video
         resolution : tuple, optional
             Original resolution of the input source.
             Useful to set a certain capture mode of a USB/CSI camera.
@@ -59,6 +62,7 @@ class VideoIO:
         self.size = size
         self.input_uri = input_uri
         self.output_uri = output_uri
+        self.output_rtsp = output_rtsp
         self.resolution = resolution
         assert frame_rate > 0
         self.frame_rate = frame_rate
@@ -101,6 +105,28 @@ class VideoIO:
             else:
                 fourcc = cv2.VideoWriter_fourcc(*'avc1')
                 self.writer = cv2.VideoWriter(self.output_uri, fourcc, output_fps, self.size, True)
+        
+        if self.output_rtsp is not None:
+            write_to_rtsp_command = ['ffmpeg',
+                '-re',
+                '-f', 'rawvideo',
+                '-s', f'{self.size[0]}x{self.size[1]}',
+                '-pixel_format', 'bgr24',
+                '-r', f'{self.cap_fps}',
+                '-i', '-',
+                '-pix_fmt', 'yuv420p',
+                '-c:v', 'h264_nvenc',
+                '-preset:v', 'llhq',
+                '-profile:v', 'high',                
+                '-bufsize', '64M',
+                '-maxrate', '4M',
+                '-rtsp_transport', 'tcp',
+                '-f', 'rtsp',
+                #'-muxdelay', '0.1',
+                self.output_rtsp
+            ]
+            self.rtsp_writer_process = subprocess.Popen(write_to_rtsp_command, stdin=subprocess.PIPE)
+            
 
     @property
     def cap_dt(self):
@@ -146,11 +172,18 @@ class VideoIO:
         assert hasattr(self, 'writer')
         self.writer.write(frame)
 
+    def write_rtsp(self, frame):
+        """Writes the next video frame to rtsp server."""
+        self.rtsp_writer_process.stdin.write(frame.tobytes())
+
     def release(self):
         """Cleans up input and output sources."""
         self.stop_capture()
         if hasattr(self, 'writer'):
             self.writer.release()
+        if hasattr(self, 'rtsp_writer_process'):
+            self.rtsp_writer_process.stdin.close()
+            self.rtsp_writer_process.wait()
         self.source.release()
 
     def _gst_cap_pipeline(self):

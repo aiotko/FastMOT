@@ -32,6 +32,8 @@ def main():
                           help='path to label names (e.g. coco.names)')
     optional.add_argument('-o', '--output-uri', metavar="URI",
                           help='URI to output video file')
+    optional.add_argument('-r', '--output-rtsp', metavar="URI",
+                          help='RTSP Server URI to output video')
     optional.add_argument('-t', '--txt', metavar="FILE",
                           help='path to output MOT Challenge format results (e.g. MOT20-01.txt)')
     optional.add_argument('-m', '--mot', action='store_true', help='run multiple object tracker')
@@ -63,12 +65,12 @@ def main():
             label_map = label_file.read().splitlines()
             fastmot.models.set_label_map(label_map)
 
-    stream = fastmot.VideoIO(config.resize_to, args.input_uri, args.output_uri, **vars(config.stream_cfg))
+    stream = fastmot.VideoIO(config.resize_to, args.input_uri, args.output_uri, args.output_rtsp, **vars(config.stream_cfg))
 
     mot = None
     txt = None
     if args.mot:
-        draw = args.show or args.output_uri is not None
+        draw = args.show or args.output_uri is not None or args.output_rtsp is not None
         mot = fastmot.MOT(config.resize_to, **vars(config.mot_cfg), draw=draw)
         mot.reset(stream.cap_dt)
     if args.txt is not None:
@@ -100,8 +102,12 @@ def main():
                     cv2.imshow('Video', frame)
                     if cv2.waitKey(1) & 0xFF == 27:
                         break
+
                 if args.output_uri is not None:
                     stream.write(frame)
+
+                if args.output_rtsp is not None:
+                    stream.write_rtsp(frame)
     finally:
         # clean up resources
         if txt is not None:
