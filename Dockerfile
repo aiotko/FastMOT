@@ -32,7 +32,8 @@ RUN apt-get -y update && \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
-    libtbb2 libtbb-dev libdc1394-22-dev && \
+    libtbb2 libtbb-dev libdc1394-22-dev \
+    ffmpeg && \
     pip install -U --no-cache-dir setuptools pip && \
     pip install --no-cache-dir numpy==1.18.0
 
@@ -64,7 +65,7 @@ RUN cmake \
     -DWITH_CUDA=OFF \
     -DWITH_GSTREAMER=ON \
     -DWITH_GSTREAMER_0_10=OFF \
-    -DWITH_FFMPEG=OFF .. && \
+    -DWITH_FFMPEG=ON .. && \
     make -j$(nproc) && \
     make install && \
     ldconfig && \
