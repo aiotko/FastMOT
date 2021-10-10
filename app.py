@@ -68,7 +68,7 @@ def main():
                           help='path to JSON configuration file')
     optional.add_argument('-l', '--labels', metavar="FILE",
                           help='path to label names (e.g. coco.names)')
-    optional.add_argument('-o', '--output-uri', metavar="URI",
+    optional.add_argument('-o', '--output-uri', metavar="URI", nargs='+', type=str,
                           help='URI to output video file')
     optional.add_argument('-r', '--output-rtsp', metavar="URI", nargs='+', type=str,
                           help='RTSP Server URI to output video')
