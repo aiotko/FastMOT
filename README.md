@@ -59,7 +59,7 @@ Make sure to have [nvidia-docker](https://docs.nvidia.com/datacenter/cloud-nativ
   # --build-arg TRT_IMAGE_VERSION=21.05 used for Ubuntu 20.04 only
   # --build-arg CUPY_NVCC_GENERATE_CODE=... used to speed up build for your GPU, e.g. "arch=compute_75,code=sm_75", change according to
   # https://developer.nvidia.com/cuda-gpus
-  docker build -t --build-arg TRT_IMAGE_VERSION=21.05 --build-arg CUPY_NVCC_GENERATE_CODE="arch=compute_75,code=sm_75" fastmot:latest .
+  docker build --build-arg TRT_IMAGE_VERSION=21.05 --build-arg CUPY_NVCC_GENERATE_CODE="arch=compute_75,code=sm_75" -t fastmot:latest .
   
   # Run xhost local:root first if you cannot visualize inside the container
   docker run --gpus all --rm -it -v $(pwd):/usr/src/app/FastMOT -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=unix$DISPLAY -e TZ=$(cat /etc/timezone) --network host fastmot:latest
