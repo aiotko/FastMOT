@@ -57,8 +57,8 @@ FastMOT has MOTA scores close to **state-of-the-art** trackers from the MOT Chal
 Make sure to have [nvidia-docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html#docker) installed. The image requires NVIDIA Driver version >= 450 for Ubuntu 18.04 and >= 465.19.01 for Ubuntu 20.04. Build and run the docker image:
   ```bash
   # --build-arg TRT_IMAGE_VERSION=21.05 used for Ubuntu 20.04 only
-  # --build-arg CUPY_NVCC_GENERATE_CODE=... used to speed up build for your GPU, e.g. "arch=compute_75,code=sm_75", change according to
-  # https://developer.nvidia.com/cuda-gpus
+  # --build-arg CUPY_NVCC_GENERATE_CODE=... used to speed up build for your GPU, e.g. "arch=compute_75,code=sm_75"
+  # Change architecture according to https://developer.nvidia.com/cuda-gpus
   docker build --build-arg TRT_IMAGE_VERSION=21.05 --build-arg CUPY_NVCC_GENERATE_CODE="arch=compute_75,code=sm_75" -t fastmot:latest .
   
   # Run xhost local:root first if you cannot visualize inside the container
