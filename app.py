@@ -17,7 +17,7 @@ def main():
     optional = parser._action_groups.pop()
     required = parser.add_argument_group('required arguments')
     group = parser.add_mutually_exclusive_group()
-    required.add_argument('-i', '--input-uri', metavar="URI", required=True, help=
+    required.add_argument('-i', '--input-uri', metavar="URI", nargs='+', type=str, required=True, help=
                           'URI to input stream\n'
                           '1) image sequence (e.g. %%06d.jpg)\n'
                           '2) video file (e.g. file.mp4)\n'
@@ -32,7 +32,7 @@ def main():
                           help='path to label names (e.g. coco.names)')
     optional.add_argument('-o', '--output-uri', metavar="URI",
                           help='URI to output video file')
-    optional.add_argument('-r', '--output-rtsp', metavar="URI",
+    optional.add_argument('-r', '--output-rtsp', metavar="URI", nargs='+', type=str,
                           help='RTSP Server URI to output video')
     optional.add_argument('-t', '--txt', metavar="FILE",
                           help='path to output MOT Challenge format results (e.g. MOT20-01.txt)')
@@ -65,61 +65,81 @@ def main():
             label_map = label_file.read().splitlines()
             fastmot.models.set_label_map(label_map)
 
-    stream = fastmot.VideoIO(config.resize_to, args.input_uri, args.output_uri, args.output_rtsp, **vars(config.stream_cfg))
+    streams = []
+    mot = [] if args.mot else None
+    txt = [] if args.txt else None
+    
+    stream_count = len(args.input_uri)
+    for stream_num in range(0, stream_count):
+        output_rtsp = args.output_rtsp[stream_num] if args.output_rtsp is not None else None
+        output_uri = args.output_uri[stream_num] if args.output_uri is not None else None
+        streams.append(fastmot.VideoIO(config.resize_to, args.input_uri[stream_num], output_uri, output_rtsp, **vars(config.stream_cfg)))
+        if args.mot:
+            draw = args.show or args.output_uri is not None or args.output_rtsp is not None
+            mot.append(fastmot.MOT(config.resize_to, **vars(config.mot_cfg), draw=draw))
+            mot[stream_num].reset(streams[stream_num].cap_dt)
+        
+        if args.txt is not None:
+            Path(args.txt[stream_num]).parent.mkdir(parents=True, exist_ok=True)
+            txt.append(open(args.txt[stream_num], 'w'))
 
-    mot = None
-    txt = None
-    if args.mot:
-        draw = args.show or args.output_uri is not None or args.output_rtsp is not None
-        mot = fastmot.MOT(config.resize_to, **vars(config.mot_cfg), draw=draw)
-        mot.reset(stream.cap_dt)
-    if args.txt is not None:
-        Path(args.txt).parent.mkdir(parents=True, exist_ok=True)
-        txt = open(args.txt, 'w')
-    if args.show:
-        cv2.namedWindow('Video', cv2.WINDOW_AUTOSIZE)
+        if args.show:
+            cv2.namedWindow(f'Video {stream_num}', cv2.WINDOW_AUTOSIZE)
 
-    logger.info('Starting video capture...')
-    stream.start_capture()
+        logger.info('Starting video capture...')
+        streams[stream_num].start_capture()
+
     try:
         with Profiler('app') as prof:
-            while not args.show or cv2.getWindowProperty('Video', 0) >= 0:
-                frame = stream.read()
-                if frame is None:
+            while not args.show: #or cv2.getWindowProperty('Video', 0) >= 0:
+                at_least_one_stream_alive = False
+                termination_requested = False
+
+                for stream_num in range(0, stream_count):
+                    frame = streams[stream_num].read()
+                    if frame is None:
+                        continue
+
+                    at_least_one_stream_alive = True
+
+                    if args.mot:
+                        mot[stream_num].step(frame)
+                        if txt is not None:
+                            for track in mot[stream_num].visible_tracks():
+                                tl = track.tlbr[:2] / config.resize_to * stream.resolution
+                                br = track.tlbr[2:] / config.resize_to * stream.resolution
+                                w, h = br - tl + 1
+                                txt[stream_num].write(f'{mot[stream_num].frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
+                                        f'{w:.6f},{h:.6f},-1,-1,-1\n')
+
+                    if args.show:
+                        cv2.imshow(f'Video {stream_num}', frame)
+                        if cv2.waitKey(1) & 0xFF == 27:
+                            termination_requested = True
+                            break
+
+                    if args.output_uri is not None:
+                        streams[stream_num].write(frame)
+
+                    if args.output_rtsp is not None:
+                        streams[stream_num].write_rtsp(frame)
+                
+                if not at_least_one_stream_alive or termination_requested:
                     break
-
-                if args.mot:
-                    mot.step(frame)
-                    if txt is not None:
-                        for track in mot.visible_tracks():
-                            tl = track.tlbr[:2] / config.resize_to * stream.resolution
-                            br = track.tlbr[2:] / config.resize_to * stream.resolution
-                            w, h = br - tl + 1
-                            txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
-                                      f'{w:.6f},{h:.6f},-1,-1,-1\n')
-
-                if args.show:
-                    cv2.imshow('Video', frame)
-                    if cv2.waitKey(1) & 0xFF == 27:
-                        break
-
-                if args.output_uri is not None:
-                    stream.write(frame)
-
-                if args.output_rtsp is not None:
-                    stream.write_rtsp(frame)
     finally:
-        # clean up resources
-        if txt is not None:
-            txt.close()
-        stream.release()
+        for stream_num in range(0, stream_count):
+            # clean up resources
+            if txt is not None:
+                txt[stream_num].close()
+            streams[stream_num].release()
         cv2.destroyAllWindows()
 
     # timing statistics
     if args.mot:
-        avg_fps = round(mot.frame_count / prof.duration)
-        logger.info('Average FPS: %d', avg_fps)
-        mot.print_timing_info()
+        for stream_num in range(0, stream_count):
+            avg_fps = round(mot[stream_num].frame_count / prof.duration)
+            logger.info(f'Average FPS {[stream_num]}: %d', avg_fps)
+            mot[stream_num].print_timing_info()
 
 
 if __name__ == '__main__':
