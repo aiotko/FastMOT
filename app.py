@@ -6,11 +6,49 @@ import argparse
 import logging
 import json
 import cv2
+import threading
 
 import fastmot
 import fastmot.models
 from fastmot.utils import ConfigDecoder, Profiler
 
+def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger):
+    try:
+        while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
+            frame = stream.read()
+            if frame is None:
+                continue
+
+            if mot is not None:
+                mot.step(frame)
+                if txt is not None:
+                    for track in mot.visible_tracks():
+                        tl = track.tlbr[:2] / config.resize_to * stream.resolution
+                        br = track.tlbr[2:] / config.resize_to * stream.resolution
+                        w, h = br - tl + 1
+                        txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
+                                f'{w:.6f},{h:.6f},-1,-1,-1\n')
+
+            if show:
+                cv2.imshow(video_window_name, frame)
+                if cv2.waitKey(1) & 0xFF == 27:
+                    break
+
+            if output_uri is not None:
+                stream.write(frame)
+
+            if output_rtsp is not None:
+                stream.write_rtsp(frame)
+    finally:
+        if txt is not None:
+            txt.close()
+        stream.release()
+
+    # timing statistics
+    if mot is not None:
+        avg_fps = round(mot.frame_count / prof.duration)
+        logger.info(f'Average FPS (stream #{stream_num}): %d', avg_fps)
+        mot.print_timing_info()        
 
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
@@ -66,81 +104,41 @@ def main():
             fastmot.models.set_label_map(label_map)
 
     streams = []
-    mot = [] if args.mot else None
-    txt = [] if args.txt else None
-    
-    stream_count = len(args.input_uri)
-    for stream_num in range(0, stream_count):
-        output_rtsp = args.output_rtsp[stream_num] if args.output_rtsp is not None else None
-        output_uri = args.output_uri[stream_num] if args.output_uri is not None else None
-        streams.append(fastmot.VideoIO(config.resize_to, args.input_uri[stream_num], output_uri, output_rtsp, **vars(config.stream_cfg)))
-        if args.mot:
-            draw = args.show or args.output_uri is not None or args.output_rtsp is not None
-            mot.append(fastmot.MOT(config.resize_to, **vars(config.mot_cfg), draw=draw))
-            mot[stream_num].reset(streams[stream_num].cap_dt)
-        
-        if args.txt is not None:
-            Path(args.txt[stream_num]).parent.mkdir(parents=True, exist_ok=True)
-            txt.append(open(args.txt[stream_num], 'w'))
-
-        if args.show:
-            cv2.namedWindow(f'Video {stream_num}', cv2.WINDOW_AUTOSIZE)
-
-        logger.info('Starting video capture...')
-        streams[stream_num].start_capture()
+    mots = [] if args.mot else None
+    txts = [] if args.txt else None
+    mot = None
+    txt = None
+    video_window_name = None
+    draw = args.show or args.output_uri is not None or args.output_rtsp is not None    
 
     try:
         with Profiler('app') as prof:
-            while not args.show: #or cv2.getWindowProperty('Video', 0) >= 0:
-                at_least_one_stream_alive = False
-                termination_requested = False
-
-                for stream_num in range(0, stream_count):
-                    frame = streams[stream_num].read()
-                    if frame is None:
-                        continue
-
-                    at_least_one_stream_alive = True
-
-                    if args.mot:
-                        mot[stream_num].step(frame)
-                        if txt is not None:
-                            for track in mot[stream_num].visible_tracks():
-                                tl = track.tlbr[:2] / config.resize_to * stream.resolution
-                                br = track.tlbr[2:] / config.resize_to * stream.resolution
-                                w, h = br - tl + 1
-                                txt[stream_num].write(f'{mot[stream_num].frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
-                                        f'{w:.6f},{h:.6f},-1,-1,-1\n')
-
-                    if args.show:
-                        cv2.imshow(f'Video {stream_num}', frame)
-                        if cv2.waitKey(1) & 0xFF == 27:
-                            termination_requested = True
-                            break
-
-                    if args.output_uri is not None:
-                        streams[stream_num].write(frame)
-
-                    if args.output_rtsp is not None:
-                        streams[stream_num].write_rtsp(frame)
+            stream_count = len(args.input_uri)
+            for stream_num in range(0, stream_count):
+                output_rtsp = args.output_rtsp[stream_num] if args.output_rtsp is not None else None
+                output_uri = args.output_uri[stream_num] if args.output_uri is not None else None
+                streams.append(fastmot.VideoIO(config.resize_to, args.input_uri[stream_num], output_uri, output_rtsp, **vars(config.stream_cfg)))
+                if args.mot:
+                    mot = fastmot.MOT(config.resize_to, **vars(config.mot_cfg), draw=draw)
+                    mots.append(mot)
+                    mots[stream_num].reset(streams[stream_num].cap_dt)
                 
-                if not at_least_one_stream_alive or termination_requested:
-                    break
+                if args.txt is not None:
+                    Path(args.txt[stream_num]).parent.mkdir(parents=True, exist_ok=True)
+                    txt = open(args.txt[stream_num], 'w')
+                    txts.append(txt)
+
+                if args.show:
+                    video_window_name = f'Video {stream_num}'
+                    cv2.namedWindow(video_window_name, cv2.WINDOW_AUTOSIZE)
+
+                logger.info('Starting video capture...')
+                streams[stream_num].start_capture()
+
+                t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger,))
+                t.start()
     finally:
-        for stream_num in range(0, stream_count):
-            # clean up resources
-            if txt is not None:
-                txt[stream_num].close()
-            streams[stream_num].release()
         cv2.destroyAllWindows()
-
-    # timing statistics
-    if args.mot:
-        for stream_num in range(0, stream_count):
-            avg_fps = round(mot[stream_num].frame_count / prof.duration)
-            logger.info(f'Average FPS {[stream_num]}: %d', avg_fps)
-            mot[stream_num].print_timing_info()
-
 
 if __name__ == '__main__':
     main()
