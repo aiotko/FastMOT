@@ -12,12 +12,12 @@ import fastmot
 import fastmot.models
 from fastmot.utils import ConfigDecoder, Profiler
 
-def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger):
+def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger, profiler):
     try:
         while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
             frame = stream.read()
             if frame is None:
-                continue
+                break
 
             if mot is not None:
                 mot.step(frame)
@@ -46,7 +46,7 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
 
     # timing statistics
     if mot is not None:
-        avg_fps = round(mot.frame_count / prof.duration)
+        avg_fps = round(mot.frame_count / profiler.duration)
         logger.info(f'Average FPS (stream #{stream_num}): %d', avg_fps)
         mot.print_timing_info()        
 
@@ -135,7 +135,7 @@ def main():
                 logger.info('Starting video capture...')
                 streams[stream_num].start_capture()
 
-                t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger,))
+                t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof,))
                 t.start()
     finally:
         cv2.destroyAllWindows()
