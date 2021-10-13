@@ -256,7 +256,7 @@ class YOLOv4P6(YOLO):
 class YOLOv4Tiny(YOLO):
     ENGINE_PATH = Path(__file__).parent / 'yolov4-tiny.trt'
     MODEL_PATH = Path(__file__).parent /  'yolov4-tiny.onnx'
-    NUM_CLASSES = 1
+    NUM_CLASSES = 80
     INPUT_SHAPE = (3, 416, 416)
     LAYER_FACTORS = [32, 16]
     SCALES = [1.05, 1.05]
