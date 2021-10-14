@@ -9,7 +9,7 @@
 
     "mot_cfg": {
         "detector_type": "YOLO",
-        "detector_frame_skip": 5,
+        "detector_frame_skip": 1,
         "class_ids": [1],
 
         "ssd_detector_cfg": {
@@ -41,7 +41,7 @@
         ],
 
         "tracker_cfg": {
-            "max_age": 6,
+            "max_age": 30,
             "age_penalty": 2,
             "motion_weight": 0.2,
             "max_assoc_cost": 0.8,
@@ -90,12 +90,12 @@
         },
 
         "visualizer_cfg": {
-            "draw_detections": false,
-            "draw_confidence": false,
-            "draw_covariance": false,
-            "draw_klt": false,
-            "draw_obj_flow": false,
-            "draw_bg_flow": false
+            "draw_detections": true,
+            "draw_confidence": true,
+            "draw_covariance": true,
+            "draw_klt": true,
+            "draw_obj_flow": true,
+            "draw_bg_flow": true
         }
     }
 }
