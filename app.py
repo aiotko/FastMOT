@@ -72,7 +72,7 @@ def main():
                           help='URI to output video file')
     optional.add_argument('-r', '--output-rtsp', metavar="URI", nargs='+', type=str,
                           help='RTSP Server URI to output video')
-    optional.add_argument('-t', '--txt', metavar="FILE",
+    optional.add_argument('-t', '--txt', metavar="FILE", nargs='+', type=str,
                           help='path to output MOT Challenge format results (e.g. MOT20-01.txt)')
     optional.add_argument('-m', '--mot', action='store_true', help='run multiple object tracker')
     optional.add_argument('-s', '--show', action='store_true', help='show visualizations')
