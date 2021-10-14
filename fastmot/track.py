@@ -129,13 +129,14 @@ class AverageFeature:
 class Track:
     _count = 0
 
-    def __init__(self, frame_id, tlbr, state, label, confirm_hits=1, buffer_size=30):
+    def __init__(self, frame_id, tlbr, state, conf, label, confirm_hits=1, buffer_size=30):
         self.trk_id = self.next_id()
         self.start_frame = frame_id
         self.frame_ids = deque([frame_id], maxlen=buffer_size)
         self.bboxes = deque([tlbr], maxlen=buffer_size)
         self.confirm_hits = confirm_hits
         self.state = state
+        self.conf = conf
         self.label = label
 
         self.age = 0
@@ -181,21 +182,23 @@ class Track:
         self.bboxes.append(tlbr)
         self.state = state
 
-    def add_detection(self, frame_id, tlbr, state, embedding, is_valid=True):
+    def add_detection(self, frame_id, tlbr, state, conf, embedding, is_valid=True):
         self.frame_ids.append(frame_id)
         self.bboxes.append(tlbr)
         self.state = state
+        self.conf = conf
         if is_valid:
             self.last_feat = embedding
             self.avg_feat.update(embedding)
         self.age = 0
         self.hits += 1
 
-    def reinstate(self, frame_id, tlbr, state, embedding):
+    def reinstate(self, frame_id, tlbr, state, conf, embedding):
         self.start_frame = frame_id
         self.frame_ids.append(frame_id)
         self.bboxes.append(tlbr)
         self.state = state
+        self.conf = conf
         self.last_feat = embedding
         self.avg_feat.update(embedding)
         self.age = 0
@@ -209,6 +212,7 @@ class Track:
         self.frame_ids.extend(other.frame_ids)
         self.bboxes.extend(other.bboxes)
         self.state = other.state
+        self.conf = other.conf
         self.age = other.age
         self.hits += other.hits
 

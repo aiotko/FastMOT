@@ -27,7 +27,7 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
                         br = track.tlbr[2:] / config.resize_to * stream.resolution
                         w, h = br - tl + 1
                         txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
-                                f'{w:.6f},{h:.6f},-1,-1,-1\n')
+                                f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
 
             if show:
                 cv2.imshow(video_window_name, frame)
