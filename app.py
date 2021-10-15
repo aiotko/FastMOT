@@ -14,31 +14,32 @@ from fastmot.utils import ConfigDecoder, Profiler
 
 def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger, profiler):
     try:
-        while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
-            frame = stream.read()
-            if frame is None:
-                break
-
-            if mot is not None:
-                mot.step(frame)
-                if txt is not None:
-                    for track in mot.visible_tracks():
-                        tl = track.tlbr[:2] / config.resize_to * stream.resolution
-                        br = track.tlbr[2:] / config.resize_to * stream.resolution
-                        w, h = br - tl + 1
-                        txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
-                                f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
-
-            if show:
-                cv2.imshow(video_window_name, frame)
-                if cv2.waitKey(1) & 0xFF == 27:
+        with profiler:
+            while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
+                frame = stream.read()
+                if frame is None:
                     break
 
-            if output_uri is not None:
-                stream.write(frame)
+                if mot is not None:
+                    mot.step(frame)
+                    if txt is not None:
+                        for track in mot.visible_tracks():
+                            tl = track.tlbr[:2] / config.resize_to * stream.resolution
+                            br = track.tlbr[2:] / config.resize_to * stream.resolution
+                            w, h = br - tl + 1
+                            txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
+                                    f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
 
-            if output_rtsp is not None:
-                stream.write_rtsp(frame)
+                if show:
+                    cv2.imshow(video_window_name, frame)
+                    if cv2.waitKey(1) & 0xFF == 27:
+                        break
+
+                if output_uri is not None:
+                    stream.write(frame)
+
+                if output_rtsp is not None:
+                    stream.write_rtsp(frame)
     finally:
         if txt is not None:
             txt.close()
@@ -135,8 +136,8 @@ def main():
                 logger.info('Starting video capture...')
                 streams[stream_num].start_capture()
 
-                t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof,))
-                t.start()
+            t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof,))
+            t.start()
     finally:
         cv2.destroyAllWindows()
 
