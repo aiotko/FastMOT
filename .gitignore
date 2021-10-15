@@ -165,3 +165,5 @@ VOCdevkit/
 
 # vscode stuff
 .vscode/
+
+/video
