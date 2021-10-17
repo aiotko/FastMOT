@@ -264,6 +264,29 @@ class YOLOv4Tiny(YOLO):
                [23,27, 37,58, 81,82]]
 
 
+class YOLOv4TinyCrowdHuman(YOLO):
+    ENGINE_PATH = Path(__file__).parent / 'yolov4-tiny-crowdhuman-608x608_best.trt'
+    MODEL_PATH = Path(__file__).parent /  'yolov4-tiny-crowdhuman-608x608_best.onnx'
+    NUM_CLASSES = 2
+    INPUT_SHAPE = (3, 608, 608)
+    LAYER_FACTORS = [32, 16]
+    SCALES = [1.05, 1.05]
+    ANCHORS = [[41,156,  69,241, 140,311],
+               [14, 36,  26, 80,  41,156]]
+
+
+class YOLOv4TinyCrowdHuman3l(YOLO):
+    ENGINE_PATH = Path(__file__).parent / 'yolov4-tiny-3l-crowdhuman-608x608_best.trt'
+    MODEL_PATH = Path(__file__).parent /  'yolov4-tiny-3l-crowdhuman-608x608_best.onnx'
+    NUM_CLASSES = 2
+    INPUT_SHAPE = (3, 608, 608)
+    LAYER_FACTORS = [32, 16, 8]
+    SCALES = [1.05, 1.05, 1.05]
+    ANCHORS = [[46,203,  80,265, 155,317],
+               [28, 49,  30,123,  58,106],
+               [8, 15,  13, 34,  18, 75]]
+
+
 class YOLOv3(YOLO):
     ENGINE_PATH = Path(__file__).parent / 'yolov3.trt'
     MODEL_PATH = Path(__file__).parent /  'yolov3.onnx'

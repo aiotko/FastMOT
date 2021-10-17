@@ -10,7 +10,7 @@
     "mot_cfg": {
         "detector_type": "YOLO",
         "detector_frame_skip": 1,
-        "class_ids": [1],
+        "class_ids": [0, 1],
 
         "ssd_detector_cfg": {
             "model": "SSDInceptionV2",
@@ -21,7 +21,7 @@
             "max_area": 120000
         },
         "yolo_detector_cfg": {
-            "model": "YOLOv4",
+            "model": "YOLOv4TinyCrowdHuman",
             "conf_thresh": 0.25,
             "nms_thresh": 0.5,
             "max_area": 800000,
@@ -34,6 +34,10 @@
         },
 
         "feature_extractor_cfgs": [
+            {
+                "model": "OSNet025",
+                "batch_size": 16
+            },
             {
                 "model": "OSNet025",
                 "batch_size": 16
