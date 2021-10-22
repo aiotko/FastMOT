@@ -9,7 +9,7 @@ import cv2
 
 
 LOGGER = logging.getLogger(__name__)
-WITH_GSTREAMER = True
+WITH_GSTREAMER = False
 
 
 class Protocol(Enum):
@@ -98,13 +98,26 @@ class VideoIO:
 
         if self.output_uri is not None:
             Path(self.output_uri).parent.mkdir(parents=True, exist_ok=True)
-            output_fps = 1 / self.cap_dt
-            if WITH_GSTREAMER:
-                self.writer = cv2.VideoWriter(self._gst_write_pipeline(), cv2.CAP_GSTREAMER, 0,
-                                              output_fps, self.size, True)
-            else:
-                fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                self.writer = cv2.VideoWriter(self.output_uri, fourcc, output_fps, self.size, True)
+            write_to_file_command = ['ffmpeg',
+                '-re',
+                '-f', 'rawvideo',
+                '-s', f'{self.size[0]}x{self.size[1]}',
+                '-pixel_format', 'bgr24',
+                '-r', '50',
+                '-i', '-',
+                '-pix_fmt', 'yuv420p',
+                '-c:v', 'h264_nvenc',
+                '-preset:v', 'llhq',
+                '-profile:v', 'high',                
+                '-bufsize', '64M',
+                '-maxrate', '4M',
+                '-y',
+                '-f', 'mp4',
+                '-video_track_timescale', f'{self.cap_fps}',
+                self.output_uri
+            ]
+
+            self.writer = subprocess.Popen(write_to_file_command, stdin=subprocess.PIPE)
         
         if self.output_rtsp is not None:
             write_to_rtsp_command = ['ffmpeg',
@@ -170,7 +183,7 @@ class VideoIO:
     def write(self, frame):
         """Writes the next video frame."""
         assert hasattr(self, 'writer')
-        self.writer.write(frame)
+        self.writer.stdin.write(frame.tobytes())
 
     def write_rtsp(self, frame):
         """Writes the next video frame to rtsp server."""
@@ -180,7 +193,8 @@ class VideoIO:
         """Cleans up input and output sources."""
         self.stop_capture()
         if hasattr(self, 'writer'):
-            self.writer.release()
+            self.writer.stdin.close()
+            self.writer.wait()
         if hasattr(self, 'rtsp_writer_process'):
             self.rtsp_writer_process.stdin.close()
             self.rtsp_writer_process.wait()
