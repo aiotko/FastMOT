@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "Docker: Python - Django",
+            "type": "docker",
+            "request": "launch",
+            "preLaunchTask": "docker-run: debug",
+            "python": {
+                "pathMappings": [
+                    {
+                        "localRoot": "${workspaceFolder}",
+                        "remoteRoot": "/usr/src/app/FastMOT"
+                    }
+                ],
+				"args": [
+					"--input-uri", "input.mp4", //"input1.mp4 input2.mp4 ..."
+					"--output-uri", "output.mp4", //"output.mp4 output2.mp4 ..."
+                    "--txt", "output.txt",
+                    //"--output-rtsp", "rtsp://127.0.0.1:8554/c1 rtsp://127.0.0.1:8554/c2",
+					"--mot"
+                ],
+                "projectType": "general"
+            }
+        }
+    ]
+}

@@ -163,7 +163,4 @@ dmypy.json
 # dataset
 VOCdevkit/
 
-# vscode stuff
-.vscode/
-
 /video
