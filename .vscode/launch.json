@@ -13,6 +13,7 @@
                     }
                 ],
 				"args": [
+                    "--verbose",
 					"--input-uri", "input.mp4", //"input1.mp4 input2.mp4 ..."
 					"--output-uri", "output.mp4", //"output.mp4 output2.mp4 ..."
                     "--txt", "output.txt",

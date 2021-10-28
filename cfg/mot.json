@@ -1,15 +1,15 @@
 {   
-    "resize_to": [1920, 1080],
+    "resize_to": [512, 512],
 
     "stream_cfg": {
         "resolution": [1920, 1080],
-        "frame_rate": 50,
+        "frame_rate": 25,
         "buffer_size": 10
     },
 
     "mot_cfg": {
         "detector_type": "YOLO",
-        "detector_frame_skip": 1,
+        "detector_frame_skip": 2,
         "class_ids": [1],
 
         "ssd_detector_cfg": {
@@ -41,7 +41,7 @@
         ],
 
         "tracker_cfg": {
-            "max_age": 30,
+            "max_age": 15,
             "age_penalty": 2,
             "motion_weight": 0.2,
             "max_assoc_cost": 0.8,
@@ -90,12 +90,12 @@
         },
 
         "visualizer_cfg": {
-            "draw_detections": true,
-            "draw_confidence": true,
-            "draw_covariance": true,
-            "draw_klt": true,
-            "draw_obj_flow": true,
-            "draw_bg_flow": true
+            "draw_detections": false,
+            "draw_confidence": false,
+            "draw_covariance": false,
+            "draw_klt": false,
+            "draw_obj_flow": false,
+            "draw_bg_flow": false
         }
     }
 }
