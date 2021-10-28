@@ -22,7 +22,7 @@ class DetectorType(Enum):
 
 
 class MOT:
-    def __init__(self, size,
+    def __init__(self, stream_num, size,
                  detector_type='YOLO',
                  detector_frame_skip=5,
                  class_ids=(1,),
@@ -62,6 +62,7 @@ class MOT:
         draw : bool, optional
             Draw visualizations.
         """
+        self.stream_num = stream_num
         self.size = size
         self.detector_type = DetectorType[detector_type.upper()]
         assert detector_frame_skip >= 1
@@ -86,11 +87,11 @@ class MOT:
 
         LOGGER.info('Loading detector model...')
         if self.detector_type == DetectorType.SSD:
-            self.detector = SSDDetector(self.size, self.class_ids, **vars(ssd_detector_cfg))
+            self.detector = SSDDetector(self.stream_num, self.size, self.class_ids, **vars(ssd_detector_cfg))
         elif self.detector_type == DetectorType.YOLO:
-            self.detector = YOLODetector(self.size, self.class_ids, **vars(yolo_detector_cfg))
+            self.detector = YOLODetector(self.stream_num, self.size, self.class_ids, **vars(yolo_detector_cfg))
         elif self.detector_type == DetectorType.PUBLIC:
-            self.detector = PublicDetector(self.size, self.class_ids, self.detector_frame_skip,
+            self.detector = PublicDetector(self.stream_num, self.size, self.class_ids, self.detector_frame_skip,
                                            **vars(public_detector_cfg))
 
         LOGGER.info('Loading feature extractor models...')
@@ -131,49 +132,51 @@ class MOT:
         """
         detections = []
         if self.frame_count == 0:
-            detections = self.detector(frame)
-            self.tracker.init(frame, detections)
+            with Profiler(self.stream_num, 'init'):
+                detections = self.detector(frame)
+                self.tracker.init(frame, detections)
         elif self.frame_count % self.detector_frame_skip == 0:
-            with Profiler('preproc'):
-                self.detector.detect_async(frame)
+            with Profiler(self.stream_num, 'preproc'):
+                self.detector.detect_async(frame, True)
 
-            with Profiler('detect'):
-                with Profiler('track'):
-                    self.tracker.compute_flow(frame)
+            with Profiler(self.stream_num, 'track'):
+                self.tracker.compute_flow(self.stream_num, frame)
+
+            with Profiler(self.stream_num, 'detect'):
                 detections = self.detector.postprocess()
 
-            with Profiler('extract'):
+            with Profiler(self.stream_num, 'extract1'):
                 cls_bboxes = np.split(detections.tlbr, find_split_indices(detections.label))
                 for extractor, bboxes in zip(self.extractors, cls_bboxes):
                     extractor.extract_async(frame, bboxes)
 
-                with Profiler('track', aggregate=True):
-                    self.tracker.apply_kalman()
+            with Profiler(self.stream_num, 'kalman', aggregate=True):
+                self.tracker.apply_kalman()
 
+            with Profiler(self.stream_num, 'extract2'):
                 embeddings = []
                 for extractor in self.extractors:
                     embeddings.append(extractor.postprocess())
                 embeddings = np.concatenate(embeddings) if len(embeddings) > 1 else embeddings[0]
 
-            with Profiler('assoc'):
+            with Profiler(self.stream_num, 'assoc'):
                 self.tracker.update(self.frame_count, detections, embeddings)
         else:
-            with Profiler('track'):
-                self.tracker.track(frame)
+            with Profiler(self.stream_num, 'track'):
+                self.tracker.track(self.stream_num, frame)
 
         if self.draw:
             self._draw(frame, detections)
         self.frame_count += 1
 
     @staticmethod
-    def print_timing_info():
-        LOGGER.debug('=================Timing Stats=================')
-        LOGGER.debug(f"{'track time:':<37}{Profiler.get_avg_millis('track'):>6.3f} ms")
-        LOGGER.debug(f"{'preprocess time:':<37}{Profiler.get_avg_millis('preproc'):>6.3f} ms")
-        LOGGER.debug(f"{'detect/flow time:':<37}{Profiler.get_avg_millis('detect'):>6.3f} ms")
-        LOGGER.debug(f"{'feature extract/kalman filter time:':<37}"
-                     f"{Profiler.get_avg_millis('extract'):>6.3f} ms")
-        LOGGER.debug(f"{'association time:':<37}{Profiler.get_avg_millis('assoc'):>6.3f} ms")
+    def print_timing_info(stream_num):
+        LOGGER.debug(f"{'  track time:':<39}{Profiler.get_avg_millis(stream_num, 'track'):>6.3f} ms")
+        LOGGER.debug(f"{'  preprocess time:':<39}{Profiler.get_avg_millis(stream_num, 'preproc'):>6.3f} ms")
+        LOGGER.debug(f"{'  detect/flow time:':<39}{Profiler.get_avg_millis(stream_num, 'detect'):>6.3f} ms")
+        LOGGER.debug(f"{'  feature extract/kalman filter time:':<39}"
+                     f"{Profiler.get_avg_millis(stream_num, 'extract'):>6.3f} ms")
+        LOGGER.debug(f"{'  association time:':<39}{Profiler.get_avg_millis(stream_num, 'assoc'):>6.3f} ms")
 
     def _draw(self, frame, detections):
         visible_tracks = list(self.visible_tracks())

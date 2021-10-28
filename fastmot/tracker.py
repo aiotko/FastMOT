@@ -136,7 +136,7 @@ class MultiTracker:
             self.tracks[new_trk.trk_id] = new_trk
             LOGGER.debug(f"{'Detected:':<14}{new_trk}")
 
-    def track(self, frame):
+    def track(self, stream_num, frame):
         """Convenience function that combines `compute_flow` and `apply_kalman`.
 
         Parameters
@@ -144,10 +144,10 @@ class MultiTracker:
         frame : ndarray
             The next frame.
         """
-        self.compute_flow(frame)
+        self.compute_flow(stream_num, frame)
         self.apply_kalman()
 
-    def compute_flow(self, frame):
+    def compute_flow(self, stream_num, frame):
         """Computes optical flow to estimate tracklet positions and camera motion.
 
         Parameters
@@ -156,7 +156,7 @@ class MultiTracker:
             The next frame.
         """
         active_tracks = [track for track in self.tracks.values() if track.active]
-        self.klt_bboxes, self.homography = self.flow.predict(frame, active_tracks)
+        self.klt_bboxes, self.homography = self.flow.predict(stream_num, frame, active_tracks)
         if self.homography is None:
             # clear tracks when camera motion cannot be estimated
             self.tracks.clear()

@@ -3,6 +3,7 @@ from pathlib import Path
 import configparser
 import abc
 import numpy as np
+from fastmot.utils.profiler import Profiler
 import numba as nb
 import cupy as cp
 import cupyx.scipy.ndimage
@@ -25,16 +26,17 @@ DET_DTYPE = np.dtype(
 
 class Detector(abc.ABC):
     @abc.abstractmethod
-    def __init__(self, size):
+    def __init__(self, stream_num, size):
+        self.stream_num = stream_num
         self.size = size
 
     def __call__(self, frame):
         """Detect objects synchronously."""
-        self.detect_async(frame)
+        self.detect_async(frame, False)
         return self.postprocess()
 
     @abc.abstractmethod
-    def detect_async(self, frame):
+    def detect_async(self, frame, with_profiler):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -43,7 +45,9 @@ class Detector(abc.ABC):
 
 
 class SSDDetector(Detector):
-    def __init__(self, size,
+    def __init__(self, 
+                 stream_num,
+                 size,
                  class_ids,
                  model='SSDInceptionV2',
                  tile_overlap=0.25,
@@ -73,7 +77,7 @@ class SSDDetector(Detector):
         max_area : int, optional
             Max area of bounding boxes to detect.
         """
-        super().__init__(size)
+        super().__init__(stream_num, size)
         self.model = models.SSD.get_model(model)
         assert 0 <= tile_overlap <= 1
         self.tile_overlap = tile_overlap
@@ -98,7 +102,7 @@ class SSDDetector(Detector):
         self.backend = TRTInference(self.model, self.batch_size)
         self.inp_handle = self.backend.input.host.reshape(self.batch_size, *self.model.INPUT_SHAPE)
 
-    def detect_async(self, frame):
+    def detect_async(self, frame, _):
         """Detects objects asynchronously."""
         self._preprocess(frame)
         self.backend.infer_async()
@@ -218,7 +222,9 @@ class SSDDetector(Detector):
 
 
 class YOLODetector(Detector):
-    def __init__(self, size,
+    def __init__(self, 
+                 stream_num,
+                 size,
                  class_ids,
                  model='YOLOv4',
                  conf_thresh=0.25,
@@ -247,7 +253,7 @@ class YOLODetector(Detector):
             Min aspect ratio (height over width) of bounding boxes to detect.
             Set to 0.1 for square shaped objects.
         """
-        super().__init__(size)
+        super().__init__(stream_num, size)
         self.model = models.YOLO.get_model(model)
         assert 0 <= conf_thresh <= 1
         self.conf_thresh = conf_thresh
@@ -267,10 +273,16 @@ class YOLODetector(Detector):
         self.backend = TRTInference(self.model, 1)
         self.inp_handle, self.upscaled_sz, self.bbox_offset = self._create_letterbox()
 
-    def detect_async(self, frame):
+    def detect_async(self, frame, with_profiler):
         """Detects objects asynchronously."""
-        self._preprocess(frame)
-        self.backend.infer_async(from_device=True)
+        if with_profiler:
+            with Profiler(self.stream_num, 'detect_preproc'):
+                self._preprocess(frame)
+            with Profiler(self.stream_num, 'detect_infer_async'):
+                self.backend.infer_async(from_device=True)
+        else:
+            self._preprocess(frame)
+            self.backend.infer_async(from_device=True)           
 
     def postprocess(self):
         """Synchronizes, applies postprocessing, and returns a record array
@@ -366,7 +378,9 @@ class YOLODetector(Detector):
 
 
 class PublicDetector(Detector):
-    def __init__(self, size,
+    def __init__(self, 
+                 stream_num,
+                 size,
                  class_ids,
                  frame_skip,
                  sequence_path=None,
@@ -389,7 +403,7 @@ class PublicDetector(Detector):
         max_area : int, optional
             Max area of bounding boxes to detect.
         """
-        super().__init__(size)
+        super().__init__(stream_num, size)
         assert tuple(class_ids) == (1,)
         self.frame_skip = frame_skip
         assert sequence_path is not None
@@ -422,7 +436,7 @@ class PublicDetector(Detector):
             if conf >= self.conf_thresh and area(tlbr) <= self.max_area:
                 self.detections[frame_id].append((tlbr, label, conf))
 
-    def detect_async(self, frame):
+    def detect_async(self, frame, _):
         pass
 
     def postprocess(self):
