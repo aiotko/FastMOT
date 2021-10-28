@@ -113,9 +113,10 @@ def main():
     draw = args.show or args.output_uri is not None or args.output_rtsp is not None    
 
     try:
-        with Profiler('app') as prof:
-            stream_count = len(args.input_uri)
-            for stream_num in range(0, stream_count):
+        threads = []
+        stream_count = len(args.input_uri)
+        for stream_num in range(0, stream_count):
+            with Profiler('app') as prof:
                 output_rtsp = args.output_rtsp[stream_num] if args.output_rtsp is not None else None
                 output_uri = args.output_uri[stream_num] if args.output_uri is not None else None
                 streams.append(fastmot.VideoIO(config.resize_to, args.input_uri[stream_num], output_uri, output_rtsp, **vars(config.stream_cfg)))
@@ -136,8 +137,14 @@ def main():
                 logger.info('Starting video capture...')
                 streams[stream_num].start_capture()
 
-            t = threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof,))
-            t.start()
+                threads.append(threading.Thread(target=do_magic, args=(config, streams[stream_num], stream_num, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof,)))
+        
+        for stream_num in range(0, stream_count):
+            threads[stream_num].start()
+
+        for stream_num in range(0, stream_count):
+            threads[stream_num].join()
+            
     finally:
         cv2.destroyAllWindows()
 
