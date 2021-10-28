@@ -2,6 +2,7 @@ from pathlib import Path
 from enum import Enum
 from collections import deque
 from urllib.parse import urlparse
+import numpy as np
 import subprocess
 import threading
 import logging
@@ -73,24 +74,28 @@ class VideoIO:
 
         self.protocol = self._parse_uri(self.input_uri)
         self.is_live = self.protocol != Protocol.IMAGE and self.protocol != Protocol.VIDEO
-        if WITH_GSTREAMER:
-            self.source = cv2.VideoCapture(self._gst_cap_pipeline(), cv2.CAP_GSTREAMER)
-        else:
-            self.source = cv2.VideoCapture(self.input_uri)
 
         self.frame_queue = deque([], maxlen=self.buffer_size)
         self.cond = threading.Condition()
         self.exit_event = threading.Event()
         self.cap_thread = threading.Thread(target=self._capture_frames)
 
-        ret, frame = self.source.read()
-        if not ret:
-            raise RuntimeError('Unable to read video stream')
-        self.frame_queue.append(frame)
+        command = [ 'ffmpeg',
+                    '-vsync', '0',
+                    '-i', f'{self.input_uri}',
+                    '-vf', f'scale={self.size[0]}:{self.size[1]}',
+                    '-f', 'image2pipe',
+                    '-pix_fmt', 'bgr24',
+                    '-vcodec', 'rawvideo', 
+                    '-']
 
-        width = self.source.get(cv2.CAP_PROP_FRAME_WIDTH)
-        height = self.source.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        self.cap_fps = self.source.get(cv2.CAP_PROP_FPS)
+        self.source = subprocess.Popen(command, stdout = subprocess.PIPE, bufsize=10**8)
+
+        # TODO: obtain real values from the stream for further usage
+        width = self.size[0]
+        height = self.size[1]
+        self.cap_fps =  self.frame_rate
+
         self.do_resize = (width, height) != self.size
         if self.cap_fps == 0:
             self.cap_fps = self.frame_rate # fallback to config if unknown
@@ -98,6 +103,7 @@ class VideoIO:
 
         if self.output_uri is not None:
             Path(self.output_uri).parent.mkdir(parents=True, exist_ok=True)
+
             write_to_file_command = ['ffmpeg',
                 '-re',
                 '-f', 'rawvideo',
@@ -113,8 +119,8 @@ class VideoIO:
                 '-maxrate', '4M',
                 '-y',
                 '-f', 'mp4',
-                '-video_track_timescale', f'{self.cap_fps}',
                 self.output_uri
+                #'-muxdelay', '0.1'
             ]
 
             self.writer = subprocess.Popen(write_to_file_command, stdin=subprocess.PIPE)
@@ -148,8 +154,6 @@ class VideoIO:
 
     def start_capture(self):
         """Start capturing from file or device."""
-        if not self.source.isOpened():
-            self.source.open(self._gst_cap_pipeline(), cv2.CAP_GSTREAMER)
         if not self.cap_thread.is_alive():
             self.cap_thread.start()
 
@@ -185,6 +189,7 @@ class VideoIO:
         assert hasattr(self, 'writer')
         self.writer.stdin.write(frame.tobytes())
 
+
     def write_rtsp(self, frame):
         """Writes the next video frame to rtsp server."""
         self.rtsp_writer_process.stdin.write(frame.tobytes())
@@ -192,13 +197,15 @@ class VideoIO:
     def release(self):
         """Cleans up input and output sources."""
         self.stop_capture()
+        if hasattr(self, 'source'):
+            self.source.stdout.close()
+            self.source.wait()
         if hasattr(self, 'writer'):
             self.writer.stdin.close()
             self.writer.wait()
         if hasattr(self, 'rtsp_writer_process'):
             self.rtsp_writer_process.stdin.close()
             self.rtsp_writer_process.wait()
-        self.source.release()
 
     def _gst_cap_pipeline(self):
         gst_elements = str(subprocess.check_output('gst-inspect-1.0'))
@@ -286,7 +293,13 @@ class VideoIO:
 
     def _capture_frames(self):
         while not self.exit_event.is_set():
-            ret, frame = self.source.read()
+            raw_image = self.source.stdout.read(self.size[0]*self.size[1]*3)
+            frame = np.fromstring(raw_image, dtype='uint8')
+            ret = frame.shape[0] == self.size[0] * self.size[1] * 3
+            if ret:
+                frame = frame.reshape((self.size[1], self.size[0], 3))
+            self.source.stdout.flush()
+
             with self.cond:
                 if not ret:
                     self.exit_event.set()
