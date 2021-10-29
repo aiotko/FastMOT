@@ -133,7 +133,7 @@ class Flow:
         self.bg_keypoints = np.empty((0, 2), np.float32)
         self.prev_bg_keypoints = np.empty((0, 2), np.float32)
 
-    def predict(self, stream_num, frame, tracks):
+    def predict(self, stream_idx, frame, tracks):
         """Predicts tracklet positions in the next frame and estimates camera motion.
 
         Parameters
@@ -151,30 +151,30 @@ class Flow:
             boxes of [x1, x2, y1, y2] as values, and a 3x3 homography matrix.
         """
         # preprocess frame
-        with Profiler(stream_num, 'f1'):
+        with Profiler(stream_idx, 'f1'):
             cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=self.frame_gray)
             cv2.resize(self.frame_gray, self.frame_small.shape[::-1], dst=self.frame_small)
 
-        with Profiler(stream_num, 'f2'):
+        with Profiler(stream_idx, 'f2'):
             # order tracks from closest to farthest
             tracks.sort(reverse=True)
 
         # detect target feature points
-        with Profiler(stream_num, 'f3'):
+        with Profiler(stream_idx, 'f3'):
             all_prev_pts = []
             self.fg_mask[:] = 255
         for track in tracks:
-            with Profiler(stream_num, 'f4'):
+            with Profiler(stream_idx, 'f4'):
                 inside_tlbr = intersection(track.tlbr, self.frame_rect)
                 target_mask = crop(self.fg_mask, inside_tlbr)
                 target_area = mask_area(target_mask)
                 keypoints = self._rect_filter(track.keypoints, inside_tlbr, self.fg_mask)
             # only detect new keypoints when too few are propagated
-            with Profiler(stream_num, 'f4'):
+            with Profiler(stream_idx, 'f4'):
                 if len(keypoints) < self.feat_density * target_area:
                     img = crop(self.prev_frame_gray, inside_tlbr)
                     feature_dist = self._estimate_feature_dist(target_area, self.feat_dist_factor)
-                    with Profiler(stream_num, 'goodFeaturesToTrack'):
+                    with Profiler(stream_idx, 'goodFeaturesToTrack'):
                         keypoints = cv2.goodFeaturesToTrack(img, mask=target_mask,
                                                             minDistance=feature_dist,
                                                             **self.obj_feat_params)
@@ -182,23 +182,23 @@ class Flow:
                         keypoints = np.empty((0, 2), np.float32)
                     else:
                         keypoints = self._ellipse_filter(keypoints, track.tlbr, inside_tlbr[:2])
-            with Profiler(stream_num, 'f5'):
+            with Profiler(stream_idx, 'f5'):
                 # batch keypoints    
                 all_prev_pts.append(keypoints)
                 # zero out target in foreground mask
                 target_mask[:] = 0
-        with Profiler(stream_num, 'f6'):
+        with Profiler(stream_idx, 'f6'):
             target_ends = list(itertools.accumulate(len(pts) for pts in
                                                     all_prev_pts)) if all_prev_pts else [0]
             target_begins = itertools.chain([0], target_ends[:-1])
 
         # detect background feature points
-        with Profiler(stream_num, 'f7'):
+        with Profiler(stream_idx, 'f7'):
             cv2.resize(self.prev_frame_gray, self.prev_frame_bg.shape[::-1], dst=self.prev_frame_bg)
             cv2.resize(self.fg_mask, self.bg_mask_small.shape[::-1], dst=self.bg_mask_small,
                     interpolation=cv2.INTER_NEAREST)
 
-        with Profiler(stream_num, 'f8'):
+        with Profiler(stream_idx, 'f8'):
             keypoints = self.bg_feat_detector.detect(self.prev_frame_bg, mask=self.bg_mask_small)
             if len(keypoints) == 0:
                 self.bg_keypoints = np.empty((0, 2), np.float32)
@@ -212,10 +212,10 @@ class Flow:
             all_prev_pts.append(keypoints)
 
         # match features using optical flow
-        with Profiler(stream_num, 'f9'):
+        with Profiler(stream_idx, 'f9'):
             all_prev_pts = np.concatenate(all_prev_pts)
             scaled_prev_pts = self._scale_pts(all_prev_pts, self.opt_flow_scale_factor)
-            with Profiler(stream_num, 'f9x'):
+            with Profiler(stream_idx, 'f9x'):
                 all_cur_pts, status, err = cv2.calcOpticalFlowPyrLK(self.prev_frame_small, self.frame_small,
                                                                     scaled_prev_pts, None,
                                                                     **self.opt_flow_params)
@@ -223,12 +223,12 @@ class Flow:
             all_cur_pts = self._unscale_pts(all_cur_pts, self.opt_flow_scale_factor, status)
 
         # save preprocessed frame buffers for next prediction
-        with Profiler(stream_num, 'f10'):
+        with Profiler(stream_idx, 'f10'):
             self.prev_frame_gray, self.frame_gray = self.frame_gray, self.prev_frame_gray
             self.prev_frame_small, self.frame_small = self.frame_small, self.prev_frame_small
 
         # estimate camera motion
-        with Profiler(stream_num, 'f11'):
+        with Profiler(stream_idx, 'f11'):
             homography = None
             prev_bg_pts, matched_bg_pts = self._get_good_match(all_prev_pts, all_cur_pts,
                                                             status, bg_begin, -1)
@@ -237,12 +237,12 @@ class Flow:
                 LOGGER.warning('Camera motion estimation failed')
                 return {}, None
 
-        with Profiler(stream_num, 'f12'):
+        with Profiler(stream_idx, 'f12'):
             homography, inlier_mask = cv2.findHomography(prev_bg_pts, matched_bg_pts,
                                                         method=cv2.RANSAC,
                                                         maxIters=self.ransac_max_iter,
                                                         confidence=self.ransac_conf)
-        with Profiler(stream_num, 'f14'):
+        with Profiler(stream_idx, 'f14'):
             self.prev_bg_keypoints, self.bg_keypoints = self._get_inliers(prev_bg_pts, matched_bg_pts,
                                                                         inlier_mask)
             if homography is None or len(self.bg_keypoints) < self.inlier_thresh:
@@ -251,7 +251,7 @@ class Flow:
                 return {}, None
 
         # estimate target bounding boxes
-        with Profiler(stream_num, 'f15'):
+        with Profiler(stream_idx, 'f15'):
             next_bboxes = {}
             self.fg_mask[:] = 255
             for begin, end, track in zip(target_begins, target_ends, tracks):

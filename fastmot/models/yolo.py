@@ -103,7 +103,7 @@ class YOLO:
         return network
 
     @classmethod
-    def build_engine(cls, trt_logger, batch_size):
+    def build_engine(cls, trt_logger, batch_size, path):
         with trt.Builder(trt_logger) as builder, builder.create_network(EXPLICIT_BATCH) as network, \
             trt.OnnxParser(network, trt_logger) as parser:
 
@@ -126,7 +126,7 @@ class YOLO:
             net_input.shape = (batch_size, *cls.INPUT_SHAPE)
 
             config = builder.create_builder_config()
-            config.max_workspace_size = 1 << 30
+            config.max_workspace_size = 1 << 31
             if builder.platform_has_fast_fp16:
                 config.set_flag(trt.BuilderFlag.FP16)
 
@@ -146,7 +146,7 @@ class YOLO:
                 return None
 
             LOGGER.info("Completed creating engine")
-            with open(cls.ENGINE_PATH, 'wb') as engine_file:
+            with open(path, 'wb') as engine_file:
                 engine_file.write(engine.serialize())
             return engine
 

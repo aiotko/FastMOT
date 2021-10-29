@@ -22,7 +22,11 @@ class DetectorType(Enum):
 
 
 class MOT:
-    def __init__(self, stream_num, size,
+    def __init__(self, 
+                 stream_idx, 
+                 stream_num, 
+                 detector,
+                 size,
                  detector_type='YOLO',
                  detector_frame_skip=5,
                  class_ids=(1,),
@@ -62,7 +66,7 @@ class MOT:
         draw : bool, optional
             Draw visualizations.
         """
-        self.stream_num = stream_num
+        self.stream_idx = stream_idx
         self.size = size
         self.detector_type = DetectorType[detector_type.upper()]
         assert detector_frame_skip >= 1
@@ -85,14 +89,16 @@ class MOT:
         if len(feature_extractor_cfgs) != len(class_ids):
             raise ValueError('Number of feature extractors must match length of class IDs')
 
-        LOGGER.info('Loading detector model...')
-        if self.detector_type == DetectorType.SSD:
-            self.detector = SSDDetector(self.stream_num, self.size, self.class_ids, **vars(ssd_detector_cfg))
-        elif self.detector_type == DetectorType.YOLO:
-            self.detector = YOLODetector(self.stream_num, self.size, self.class_ids, **vars(yolo_detector_cfg))
-        elif self.detector_type == DetectorType.PUBLIC:
-            self.detector = PublicDetector(self.stream_num, self.size, self.class_ids, self.detector_frame_skip,
-                                           **vars(public_detector_cfg))
+        # LOGGER.info('Loading detector model...')
+        # if self.detector_type == DetectorType.SSD:
+        #     self.detector = SSDDetector(stream_num, self.size, self.class_ids, **vars(ssd_detector_cfg))
+        # elif self.detector_type == DetectorType.YOLO:
+        #     self.detector = YOLODetector(stream_num, self.size, self.class_ids, **vars(yolo_detector_cfg))
+        # elif self.detector_type == DetectorType.PUBLIC:
+        #     self.detector = PublicDetector(stream_num, self.size, self.class_ids, self.detector_frame_skip,
+        #                                    **vars(public_detector_cfg))
+        # TODO
+        self.detector = detector
 
         LOGGER.info('Loading feature extractor models...')
         self.extractors = [FeatureExtractor(**vars(cfg)) for cfg in feature_extractor_cfgs]
@@ -132,51 +138,51 @@ class MOT:
         """
         detections = []
         if self.frame_count == 0:
-            with Profiler(self.stream_num, 'init'):
-                detections = self.detector(frame)
+            with Profiler(self.stream_idx, 'init'):
+                detections = self.detector(self.stream_idx, frame)
                 self.tracker.init(frame, detections)
         elif self.frame_count % self.detector_frame_skip == 0:
-            with Profiler(self.stream_num, 'preproc'):
-                self.detector.detect_async(frame, True)
+            with Profiler(self.stream_idx, 'preproc'):
+                self.detector.detect_async(self.stream_idx, frame, True)
 
-            with Profiler(self.stream_num, 'track'):
-                self.tracker.compute_flow(self.stream_num, frame)
+            with Profiler(self.stream_idx, 'track'):
+                self.tracker.compute_flow(self.stream_idx, frame)
 
-            with Profiler(self.stream_num, 'detect'):
-                detections = self.detector.postprocess()
+            with Profiler(self.stream_idx, 'detect'):
+                detections = self.detector.postprocess(self.stream_idx)
 
-            with Profiler(self.stream_num, 'extract1'):
+            with Profiler(self.stream_idx, 'extract1'):
                 cls_bboxes = np.split(detections.tlbr, find_split_indices(detections.label))
                 for extractor, bboxes in zip(self.extractors, cls_bboxes):
                     extractor.extract_async(frame, bboxes)
 
-            with Profiler(self.stream_num, 'kalman', aggregate=True):
+            with Profiler(self.stream_idx, 'kalman', aggregate=True):
                 self.tracker.apply_kalman()
 
-            with Profiler(self.stream_num, 'extract2'):
+            with Profiler(self.stream_idx, 'extract2'):
                 embeddings = []
                 for extractor in self.extractors:
                     embeddings.append(extractor.postprocess())
                 embeddings = np.concatenate(embeddings) if len(embeddings) > 1 else embeddings[0]
 
-            with Profiler(self.stream_num, 'assoc'):
+            with Profiler(self.stream_idx, 'assoc'):
                 self.tracker.update(self.frame_count, detections, embeddings)
         else:
-            with Profiler(self.stream_num, 'track'):
-                self.tracker.track(self.stream_num, frame)
+            with Profiler(self.stream_idx, 'track'):
+                self.tracker.track(self.stream_idx, frame)
 
         if self.draw:
             self._draw(frame, detections)
         self.frame_count += 1
 
     @staticmethod
-    def print_timing_info(stream_num):
-        LOGGER.debug(f"{'  track time:':<39}{Profiler.get_avg_millis(stream_num, 'track'):>6.3f} ms")
-        LOGGER.debug(f"{'  preprocess time:':<39}{Profiler.get_avg_millis(stream_num, 'preproc'):>6.3f} ms")
-        LOGGER.debug(f"{'  detect/flow time:':<39}{Profiler.get_avg_millis(stream_num, 'detect'):>6.3f} ms")
+    def print_timing_info(stream_idx):
+        LOGGER.debug(f"{'  track time:':<39}{Profiler.get_avg_millis(stream_idx, 'track'):>6.3f} ms")
+        LOGGER.debug(f"{'  preprocess time:':<39}{Profiler.get_avg_millis(stream_idx, 'preproc'):>6.3f} ms")
+        LOGGER.debug(f"{'  detect/flow time:':<39}{Profiler.get_avg_millis(stream_idx, 'detect'):>6.3f} ms")
         LOGGER.debug(f"{'  feature extract/kalman filter time:':<39}"
-                     f"{Profiler.get_avg_millis(stream_num, 'extract'):>6.3f} ms")
-        LOGGER.debug(f"{'  association time:':<39}{Profiler.get_avg_millis(stream_num, 'assoc'):>6.3f} ms")
+                     f"{Profiler.get_avg_millis(stream_idx, 'extract'):>6.3f} ms")
+        LOGGER.debug(f"{'  association time:':<39}{Profiler.get_avg_millis(stream_idx, 'assoc'):>6.3f} ms")
 
     def _draw(self, frame, detections):
         visible_tracks = list(self.visible_tracks())

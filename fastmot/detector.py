@@ -2,6 +2,7 @@ from collections import defaultdict
 from pathlib import Path
 import configparser
 import abc
+import time
 import numpy as np
 from fastmot.utils.profiler import Profiler
 import numba as nb
@@ -30,10 +31,10 @@ class Detector(abc.ABC):
         self.stream_num = stream_num
         self.size = size
 
-    def __call__(self, frame):
+    def __call__(self, stream_idx, frame):
         """Detect objects synchronously."""
-        self.detect_async(frame, False)
-        return self.postprocess()
+        self.detect_async(stream_idx, frame, False)
+        return self.postprocess(stream_idx)
 
     @abc.abstractmethod
     def detect_async(self, frame, with_profiler):
@@ -102,12 +103,12 @@ class SSDDetector(Detector):
         self.backend = TRTInference(self.model, self.batch_size)
         self.inp_handle = self.backend.input.host.reshape(self.batch_size, *self.model.INPUT_SHAPE)
 
-    def detect_async(self, frame, _):
+    def detect_async(self, stream_idx, frame, _):
         """Detects objects asynchronously."""
         self._preprocess(frame)
         self.backend.infer_async()
 
-    def postprocess(self):
+    def postprocess(self, stream_idx):
         """Synchronizes, applies postprocessing, and returns a record array
         of detections (DET_DTYPE).
         This API should be called after `detect_async`.
@@ -222,6 +223,11 @@ class SSDDetector(Detector):
 
 
 class YOLODetector(Detector):
+    __streams_in_queue = 0
+    __wait_until_syncronized = False
+    __wait_initiator_stream_idx = -1
+    __det_out = []
+
     def __init__(self, 
                  stream_num,
                  size,
@@ -270,36 +276,68 @@ class YOLODetector(Detector):
         except IndexError as err:
             raise ValueError('Unsupported class IDs') from err
 
-        self.backend = TRTInference(self.model, 1)
+        self.backend = TRTInference(self.model, self.stream_num)
         self.inp_handle, self.upscaled_sz, self.bbox_offset = self._create_letterbox()
 
-    def detect_async(self, frame, with_profiler):
+    def detect_async(self, stream_idx, frame, with_profiler):
         """Detects objects asynchronously."""
         if with_profiler:
-            with Profiler(self.stream_num, 'detect_preproc'):
-                self._preprocess(frame)
-            with Profiler(self.stream_num, 'detect_infer_async'):
-                self.backend.infer_async(from_device=True)
-        else:
-            self._preprocess(frame)
-            self.backend.infer_async(from_device=True)           
+            with Profiler(stream_idx, 'detect_preproc'):
+                self._preprocess(stream_idx, frame)
 
-    def postprocess(self):
+            self.__streams_in_queue += 1
+            if (self.__streams_in_queue >= self.stream_num - 1):
+                with Profiler(stream_idx, 'detect_infer_async'):
+                    self.backend.infer_async(from_device=True)
+        else:
+            self._preprocess(stream_idx, frame)
+            self.__streams_in_queue += 1
+            if (self.__streams_in_queue >= self.stream_num - 1):
+                self.backend.infer_async(from_device=True)           
+
+    def postprocess(self, stream_idx):
         """Synchronizes, applies postprocessing, and returns a record array
         of detections (DET_DTYPE).
         This API should be called after `detect_async`.
         Detections are sorted in ascending order by class ID.
         """
-        det_out = self.backend.synchronize()
-        det_out = np.concatenate(det_out).reshape(-1, 7)
-        detections = self._filter_dets(det_out, self.upscaled_sz, self.bbox_offset,
-                                       self.label_mask, self.conf_thresh, self.nms_thresh,
-                                       self.max_area, self.min_aspect_ratio)
-        detections = np.fromiter(detections, DET_DTYPE, len(detections)).view(np.recarray)
-        return detections
+        with Profiler(stream_idx, 'wait'):
+            t0 = time.time()
+            while (self.__streams_in_queue < self.stream_num - 1):
+                time.sleep(0.001)
 
-    def _preprocess(self, frame):
-        zoom = np.roll(self.inp_handle.shape, -1) / frame.shape
+        #print(f"{time.time():>25.9f} {stream_idx} >")
+        with Profiler(stream_idx, 'wait_until_syncronized'):
+            if not self.__wait_until_syncronized:
+                self.__wait_initiator_stream_idx = stream_idx
+                self.__wait_until_syncronized = True
+            while self.__wait_until_syncronized and stream_idx != self.__wait_initiator_stream_idx:
+                time.sleep(0.001)
+
+        with Profiler(stream_idx, 'synchronize'):
+            if stream_idx == self.__wait_initiator_stream_idx:
+                self.__det_out = self.backend.synchronize()
+        #print(f"{time.time():>25.9f} {stream_idx} <")
+            self.__wait_until_syncronized = False
+            self.__streams_in_queue -= 1
+
+        with Profiler(stream_idx, 'det_out'):
+            # TODO
+            det_out = [[], [], []]
+            det_out[0] = self.__det_out[0][stream_idx * 86016 : (stream_idx + 1) * 86016]
+            det_out[1] = self.__det_out[1][stream_idx * 21504 : (stream_idx + 1) * 21504]
+            det_out[2] = self.__det_out[2][stream_idx * 5376 : (stream_idx + 1) * 5376]
+
+            det_out = np.concatenate(det_out).reshape(-1, 7)
+            detections = self._filter_dets(det_out, self.upscaled_sz, self.bbox_offset,
+                                        self.label_mask, self.conf_thresh, self.nms_thresh,
+                                        self.max_area, self.min_aspect_ratio)
+            detections = np.fromiter(detections, DET_DTYPE, len(detections)).view(np.recarray)
+            return detections
+
+    def _preprocess(self, stream_idx, frame):
+        shape_wihout_batch_size = tuple(list(self.inp_handle.shape)[1:])
+        zoom = np.roll(shape_wihout_batch_size, -1) / frame.shape
         with self.backend.stream:
             frame_dev = cp.asarray(frame)
             # resize
@@ -309,7 +347,7 @@ class YOLODetector(Detector):
             # HWC -> CHW
             chw_dev = rgb_dev.transpose(2, 0, 1)
             # normalize to [0, 1] interval
-            cp.multiply(chw_dev, 1 / 255., out=self.inp_handle)
+            cp.multiply(chw_dev, 1 / 255., out=self.inp_handle[stream_idx])
 
     def _create_letterbox(self):
         src_size = np.array(self.size)
@@ -326,7 +364,7 @@ class YOLODetector(Detector):
             roi = np.s_[:]
             upscaled_sz = src_size
             bbox_offset = np.zeros(2)
-        inp_reshaped = self.backend.input.device.reshape(self.model.INPUT_SHAPE)
+        inp_reshaped = self.backend.input.device.reshape((self.stream_num,) + self.model.INPUT_SHAPE)
         inp_reshaped[:] = 0.5 # initial value for letterbox
         inp_handle = inp_reshaped[roi]
         return inp_handle, upscaled_sz, bbox_offset
@@ -436,10 +474,10 @@ class PublicDetector(Detector):
             if conf >= self.conf_thresh and area(tlbr) <= self.max_area:
                 self.detections[frame_id].append((tlbr, label, conf))
 
-    def detect_async(self, frame, _):
+    def detect_async(self, stream_idx, frame, _):
         pass
 
-    def postprocess(self):
+    def postprocess(self, stream_idx):
         detections = np.array(self.detections[self.frame_id], DET_DTYPE).view(np.recarray)
         self.frame_id += self.frame_skip
         return detections

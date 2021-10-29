@@ -53,11 +53,17 @@ class TRTInference:
                 raise RuntimeError('Plugin not found') from err
 
         # load trt engine or build one if not found
-        if not self.model.ENGINE_PATH.exists():
-            self.engine = self.model.build_engine(TRTInference.TRT_LOGGER, self.batch_size)
+        path = self.model.ENGINE_PATH
+        if 'yolo' in path.stem:
+            path = path.with_name(path.stem + f'_{self.batch_size}' + path.suffix)
+        if not path.exists():
+            if 'yolo' in path.stem:
+                self.engine = self.model.build_engine(TRTInference.TRT_LOGGER, self.batch_size, path)
+            else:
+                self.engine = self.model.build_engine(TRTInference.TRT_LOGGER, self.batch_size)
         else:
             runtime = trt.Runtime(TRTInference.TRT_LOGGER)
-            with open(self.model.ENGINE_PATH, 'rb') as engine_file:
+            with open(path, 'rb') as engine_file:
                 self.engine = runtime.deserialize_cuda_engine(engine_file.read())
         if self.engine is None:
             raise RuntimeError('Unable to load the engine file')

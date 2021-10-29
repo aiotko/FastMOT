@@ -136,7 +136,7 @@ class MultiTracker:
             self.tracks[new_trk.trk_id] = new_trk
             LOGGER.debug(f"{'Detected:':<14}{new_trk}")
 
-    def track(self, stream_num, frame):
+    def track(self, stream_idx, frame):
         """Convenience function that combines `compute_flow` and `apply_kalman`.
 
         Parameters
@@ -144,10 +144,10 @@ class MultiTracker:
         frame : ndarray
             The next frame.
         """
-        self.compute_flow(stream_num, frame)
+        self.compute_flow(stream_idx, frame)
         self.apply_kalman()
 
-    def compute_flow(self, stream_num, frame):
+    def compute_flow(self, stream_idx, frame):
         """Computes optical flow to estimate tracklet positions and camera motion.
 
         Parameters
@@ -156,7 +156,7 @@ class MultiTracker:
             The next frame.
         """
         active_tracks = [track for track in self.tracks.values() if track.active]
-        self.klt_bboxes, self.homography = self.flow.predict(stream_num, frame, active_tracks)
+        self.klt_bboxes, self.homography = self.flow.predict(stream_idx, frame, active_tracks)
         if self.homography is None:
             # clear tracks when camera motion cannot be estimated
             self.tracks.clear()
@@ -263,7 +263,7 @@ class MultiTracker:
             next_tlbr = as_tlbr(mean[:4])
             is_valid = not occluded_det_mask[det_id]
             if track.hits == self.confirm_hits - 1:
-                LOGGER.info(f"{'Found:':<14}{track}")
+                LOGGER.info(f"{frame_id} - {'Found:':<14}{track}")
             if ios(next_tlbr, self.frame_rect) < 0.5:
                 is_valid = False
                 if track.confirmed:
