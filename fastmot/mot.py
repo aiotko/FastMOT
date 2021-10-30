@@ -128,7 +128,7 @@ class MOT:
         self.frame_count = 0
         self.tracker.reset(cap_dt)
 
-    def step(self, frame):
+    def step(self, frame, stream):
         """Runs multiple object tracker on the next frame.
 
         Parameters
@@ -141,12 +141,16 @@ class MOT:
             with Profiler(self.stream_idx, 'init'):
                 detections = self.detector(self.stream_idx, frame)
                 self.tracker.init(frame, detections)
+                next_frame = stream.read()
         elif self.frame_count % self.detector_frame_skip == 0:
             with Profiler(self.stream_idx, 'preproc'):
                 self.detector.detect_async(self.stream_idx, frame, True)
 
             with Profiler(self.stream_idx, 'track'):
                 self.tracker.compute_flow(self.stream_idx, frame)
+
+            with Profiler(self.stream_idx, 'read'):
+                next_frame = stream.read()
 
             with Profiler(self.stream_idx, 'detect'):
                 detections = self.detector.postprocess(self.stream_idx)
@@ -170,10 +174,14 @@ class MOT:
         else:
             with Profiler(self.stream_idx, 'track'):
                 self.tracker.track(self.stream_idx, frame)
+            with Profiler(self.stream_idx, 'read'):
+                next_frame = stream.read()
 
         if self.draw:
             self._draw(frame, detections)
         self.frame_count += 1
+
+        return next_frame
 
     @staticmethod
     def print_timing_info(stream_idx):

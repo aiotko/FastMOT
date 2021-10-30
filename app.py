@@ -21,21 +21,22 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
             with Profiler(stream_num, 'effective'):
                 count = 0
                 t = time.time()
+                with Profiler(stream_num, 'read'):
+                    frame = stream.read()
                 while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
                     with Profiler(stream_num, 'read'):
-                        frame = stream.read()
-                        #if count == 3000:
+                        #if count == 4000:
                         #    break
                         if frame is None:
                             break
                         count += 1
                         if count % 100 == 0:
-                            logger.debug(f"FPS: {100 / (time.time() - t):>3.0f}")
+                            logger.debug(f"FPS ({stream_num}): {100 / (time.time() - t):>3.0f}")
                             t = time.time()
 
                     if mot is not None:
                         with Profiler(stream_num, 'mot'):
-                            mot.step(frame)
+                            next_frame = mot.step(frame, stream)
                         with Profiler(stream_num, 'txt'):
                             if txt is not None:
                                 for track in mot.visible_tracks():
@@ -58,6 +59,8 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
                     if output_rtsp is not None:
                         with Profiler(stream_num, 'rtsp'):
                             stream.write_rtsp(frame)
+
+                    frame = next_frame
                 frame_count[stream_num] = count
         finally:
             if txt is not None:
