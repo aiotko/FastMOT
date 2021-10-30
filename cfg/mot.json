@@ -3,13 +3,13 @@
 
     "stream_cfg": {
         "resolution": [1920, 1080],
-        "frame_rate": 25,
+        "frame_rate": 20,
         "buffer_size": 10
     },
 
     "mot_cfg": {
         "detector_type": "YOLO",
-        "detector_frame_skip": 2,
+        "detector_frame_skip": 3,
         "class_ids": [1],
 
         "ssd_detector_cfg": {
@@ -41,7 +41,7 @@
         ],
 
         "tracker_cfg": {
-            "max_age": 15,
+            "max_age": 10,
             "age_penalty": 2,
             "motion_weight": 0.2,
             "max_assoc_cost": 0.8,

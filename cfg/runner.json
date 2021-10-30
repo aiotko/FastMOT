@@ -1,0 +1,5 @@
+{
+    "containers": 5,
+    "threads": 4,
+    "mot_config": "cfg/mot.json"
+}
