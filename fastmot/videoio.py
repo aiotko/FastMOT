@@ -8,6 +8,8 @@ import threading
 import logging
 import cv2
 
+from fastmot.utils.profiler import Profiler
+
 
 LOGGER = logging.getLogger(__name__)
 WITH_GSTREAMER = True
@@ -23,7 +25,9 @@ class Protocol(Enum):
 
 
 class VideoIO:
-    def __init__(self, size, input_uri,
+    def __init__(self, size, 
+                 stream_num, 
+                 input_uri,
                  output_uri=None,
                  output_rtsp=None,
                  resolution=(1920, 1080),
@@ -61,6 +65,7 @@ class VideoIO:
             This depends on hardware and processing complexity.
         """
         self.size = size
+        self.stream_num = stream_num
         self.input_uri = input_uri
         self.output_uri = output_uri
         self.output_rtsp = output_rtsp
@@ -72,26 +77,47 @@ class VideoIO:
         assert proc_fps > 0
         self.proc_fps = proc_fps
 
-        self.protocol = self._parse_uri(self.input_uri)
+        self.protocol = self._parse_uri(self.input_uri[0])
         self.is_live = self.protocol != Protocol.IMAGE and self.protocol != Protocol.VIDEO
 
         self.frame_queue = deque([], maxlen=self.buffer_size)
         self.cond = threading.Condition()
         self.exit_event = threading.Event()
         self.cap_thread = threading.Thread(target=self._capture_frames)
+        
+        #input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-resize', f'{self.size[0]}x{self.size[1]}', '-r', f'{self.frame_rate}', '-rtsp_transport', 'tcp', '-i' , i] for i in input_uri]
+        #input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-resize', f'1920x1080', '-rtsp_transport', 'tcp', '-r', f'{self.frame_rate}', '-thread_queue_size', '4096', '-i' , i] for i in input_uri]
+        input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-rtsp_transport', 'tcp', '-r', f'{self.frame_rate}', '-thread_queue_size', '4096', '-i' , i] for i in input_uri]        
+        input_list = [item for sublist in input_list for item in sublist]
+        
+        #  DEV.LS h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (decoders: h264 h264_v4l2m2m h264_cuvid ) (encoders: libx264 libx264rgb h264_nvenc h264_omx h264_v4l2m2m h264_vaapi nvenc nvenc_h264 )
 
+        out_file_names = [i.split('.')[-1].split(':')[0] + '.mp4' for i in input_uri]
+        output_list = [['-map', str(i), '-c:v', 'copy', out_file_names[i]] for i in range(0, len(input_uri))]
+        output_list = [item for sublist in output_list for item in sublist]
+        #'h264_nvenc', '-b:v', '5M' '-r', f'{self.frame_rate}',
         command = [ 'ffmpeg',
                     '-vsync', '0',
+                    '-loglevel', 'warning',
                     #'-hwaccel', 'cuda',
-                    #'-c:v', 'h264_cuvid',
-                    #'-resize', '512x512',
-                    '-i', f'{self.input_uri}',
-                    '-vf', f'scale={self.size[0]}:{self.size[1]}',
+                    # '-c:v', 'h264_cuvid',
+                    #'-resize', f'{self.size[0]}x{self.size[1]}',
+                    #'-rtsp_transport', 'tcp',
+                    #'-r', f'{self.frame_rate}',
+                  ]
+        command.extend(input_list)
+        command.extend(
+                  [
+                    #'-vf', f'scale={self.size[0]}:{self.size[1]}',
                     '-f', 'image2pipe',
                     '-pix_fmt', 'bgr24',
                     '-vcodec', 'rawvideo',
                     #'-r', f'{self.frame_rate}',
-                    '-']#,
+                    '-filter_complex', f'vstack=inputs={self.stream_num}[v0];[v0]scale={self.size[0]}:{self.stream_num*self.size[1]}',
+                    '-'])
+        command.extend(output_list)
+        command.append('-y')
+
                     #'-codec', 'copy',
                     #'-profile:v', 'baseline',
                     #'-s', '1920x1080',
@@ -100,7 +126,6 @@ class VideoIO:
                     #'-hls_list_size', '0',
                     #'-f', 'hls',
                     #f'qq{str(self.input_uri.split(".")[-1].split(":")[0])}.m38u']
-
         self.source = subprocess.Popen(command, stdout = subprocess.PIPE, bufsize=10**8)
 
         # TODO: obtain real values from the stream for further usage
@@ -113,29 +138,31 @@ class VideoIO:
             self.cap_fps = self.frame_rate # fallback to config if unknown
         LOGGER.info('%dx%d stream @ %d FPS', width, height, self.cap_fps)
 
+        self.writer = [None] * self.stream_num
         if self.output_uri is not None:
-            Path(self.output_uri).parent.mkdir(parents=True, exist_ok=True)
+            for stream_idx in range(0, self.stream_num):
+                Path(self.output_uri[stream_idx]).parent.mkdir(parents=True, exist_ok=True)
 
-            write_to_file_command = ['ffmpeg',
-                '-re',
-                '-f', 'rawvideo',
-                '-s', f'{self.size[0]}x{self.size[1]}',
-                '-pixel_format', 'bgr24',
-                '-r', '50',
-                '-i', '-',
-                '-pix_fmt', 'yuv420p',
-                '-c:v', 'h264_nvenc',
-                '-preset:v', 'llhq',
-                '-profile:v', 'high',                
-                '-bufsize', '64M',
-                '-maxrate', '4M',
-                '-y',
-                '-f', 'mp4',
-                self.output_uri
-                #'-muxdelay', '0.1'
-            ]
+                write_to_file_command = ['ffmpeg',
+                    '-re',
+                    '-f', 'rawvideo',
+                    '-s', f'{self.size[0]}x{self.size[1]}',
+                    '-pixel_format', 'bgr24',
+                    '-r', '50',
+                    '-i', '-',
+                    '-pix_fmt', 'yuv420p',
+                    '-c:v', 'h264_nvenc',
+                    '-preset:v', 'llhq',
+                    '-profile:v', 'high',                
+                    '-bufsize', '64M',
+                    '-maxrate', '4M',
+                    '-y',
+                    '-f', 'mp4',
+                    self.output_uri[stream_idx]
+                    #'-muxdelay', '0.1'
+                ]
 
-            self.writer = subprocess.Popen(write_to_file_command, stdin=subprocess.PIPE)
+                self.writer[stream_idx] = subprocess.Popen(write_to_file_command, stdin=subprocess.PIPE)
         
         if self.output_rtsp is not None:
             write_to_rtsp_command = ['ffmpeg',
@@ -192,14 +219,20 @@ class VideoIO:
                 return None
             frame = self.frame_queue.popleft()
             self.cond.notify()
-        if self.do_resize:
-            frame = cv2.resize(frame, self.size)
-        return frame
+        # if self.do_resize:
+        #     frame = cv2.resize(frame, self.size)
+        # with Profiler(0, 'cv2_resize'):
+        #     frame = cv2.resize(frame, (self.size[0], self.size[1] * self.stream_num))
+        frames = [frame[y:y + self.size[1], 0:self.size[0]] for y in range(0, self.size[1] * self.stream_num, self.size[1])]
 
-    def write(self, frame):
+        return frames
+
+    def write(self, frames):
         """Writes the next video frame."""
         assert hasattr(self, 'writer')
-        self.writer.stdin.write(frame.tobytes())
+        for stream_idx in range(0, self.stream_num):
+            with Profiler(stream_idx, 'write'):
+                self.writer[stream_idx].stdin.write(frames[stream_idx].tobytes())
 
 
     def write_rtsp(self, frame):
@@ -212,9 +245,10 @@ class VideoIO:
         if hasattr(self, 'source'):
             self.source.stdout.close()
             self.source.wait()
-        if hasattr(self, 'writer'):
-            self.writer.stdin.close()
-            self.writer.wait()
+        # if hasattr(self, 'writer'):
+        #     for stream_idx in range(0, self.stream_num):
+        #         self.writer[stream_idx].stdin.close()
+        #         self.writer[stream_idx].wait()
         if hasattr(self, 'rtsp_writer_process'):
             self.rtsp_writer_process.stdin.close()
             self.rtsp_writer_process.wait()
@@ -307,12 +341,24 @@ class VideoIO:
 
     def _capture_frames(self):
         while not self.exit_event.is_set():
-            raw_image = self.source.stdout.read(self.size[0]*self.size[1]*3)
-            frame = np.fromstring(raw_image, dtype='uint8')
-            ret = frame.shape[0] == self.size[0] * self.size[1] * 3
-            if ret:
-                frame = frame.reshape((self.size[1], self.size[0], 3))
-            self.source.stdout.flush()
+            with Profiler(0, 'capture_frames'):
+                with Profiler(0, 'read_ffmpeg'):
+                    raw_image = self.source.stdout.read(self.stream_num*self.size[0]*self.size[1]*3)
+                frame = np.fromstring(raw_image, dtype='uint8')
+                ret = frame.shape[0] == self.stream_num * self.size[0] * self.size[1] * 3
+                if ret:
+                    frame = frame.reshape((self.stream_num * self.size[1], self.size[0], 3))
+                self.source.stdout.flush()
+                if len(self.frame_queue) > 0:
+                    LOGGER.debug(f'Buffer size: {len(self.frame_queue)}')
+
+                # with Profiler(0, 'read_ffmpeg'):
+                #     raw_image = self.source.stdout.read(self.stream_num*1920*1080*3)
+                # frame = np.fromstring(raw_image, dtype='uint8')
+                # ret = frame.shape[0] == self.stream_num*1920*1080*3
+                # if ret:
+                #     frame = frame.reshape((self.stream_num * 1080, 1920, 3))
+                # self.source.stdout.flush()
 
             with self.cond:
                 if not ret:

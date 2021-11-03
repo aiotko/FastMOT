@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 from enum import Enum
 import logging
@@ -23,7 +24,6 @@ class DetectorType(Enum):
 
 class MOT:
     def __init__(self, 
-                 stream_idx, 
                  stream_num, 
                  detector,
                  size,
@@ -66,7 +66,7 @@ class MOT:
         draw : bool, optional
             Draw visualizations.
         """
-        self.stream_idx = stream_idx
+        self.stream_num = stream_num
         self.size = size
         self.detector_type = DetectorType[detector_type.upper()]
         assert detector_frame_skip >= 1
@@ -101,8 +101,8 @@ class MOT:
         self.detector = detector
 
         LOGGER.info('Loading feature extractor models...')
-        self.extractors = [FeatureExtractor(**vars(cfg)) for cfg in feature_extractor_cfgs]
-        self.tracker = MultiTracker(self.size, self.extractors[0].metric, **vars(tracker_cfg))
+        self.extractors = [[FeatureExtractor(**vars(cfg))for cfg in feature_extractor_cfgs]  for _ in range(0, self.stream_num) ]
+        self.trackers = [MultiTracker(self.size, self.extractors[stream_idx][0].metric, **vars(tracker_cfg)) for stream_idx in range(0, self.stream_num)]
         self.visualizer = Visualizer(**vars(visualizer_cfg))
         self.frame_count = 0
 
@@ -114,8 +114,8 @@ class MOT:
         Iterator[Track]
             Confirmed and active tracks from the tracker.
         """
-        return (track for track in self.tracker.tracks.values()
-                if track.confirmed and track.active)
+        return [(track for track in self.trackers[stream_idx].tracks.values()
+                if track.confirmed and track.active) for stream_idx in range(0, self.stream_num)]
 
     def reset(self, cap_dt):
         """Resets multiple object tracker. Must be called before `step`.
@@ -126,9 +126,10 @@ class MOT:
             Time interval in seconds between each frame.
         """
         self.frame_count = 0
-        self.tracker.reset(cap_dt)
+        for stream_idx in range(0, self.stream_num):
+            self.trackers[stream_idx].reset(cap_dt)
 
-    def step(self, frame, stream):
+    def step(self, frames, stream):
         """Runs multiple object tracker on the next frame.
 
         Parameters
@@ -136,52 +137,67 @@ class MOT:
         frame : ndarray
             The next frame.
         """
-        detections = []
+        detections = [None] * self.stream_num
         if self.frame_count == 0:
-            with Profiler(self.stream_idx, 'init'):
-                detections = self.detector(self.stream_idx, frame)
-                self.tracker.init(frame, detections)
-                next_frame = stream.read()
+            with Profiler(0, 'init'):
+                detections = self.detector(frames)
+                for stream_idx in range(0, self.stream_num):
+                    self.trackers[stream_idx].init(frames[stream_idx], detections[stream_idx])
+
+            next_frames = stream.read()
         elif self.frame_count % self.detector_frame_skip == 0:
-            with Profiler(self.stream_idx, 'preproc'):
-                self.detector.detect_async(self.stream_idx, frame, True)
+            with Profiler(0, 'preproc'):
+                self.detector.detect_async(frames, True)
 
-            with Profiler(self.stream_idx, 'track'):
-                self.tracker.compute_flow(self.stream_idx, frame)
+            threads = []
+            for stream_idx in range(0, self.stream_num):
+                threads.append(threading.Thread(target=self.trackers[stream_idx].compute_flow, args=(stream_idx, frames[stream_idx], )))
+                threads[stream_idx].start()
 
-            with Profiler(self.stream_idx, 'read'):
-                next_frame = stream.read()
+            with Profiler(0, 'read'):
+                next_frames = stream.read()
 
-            with Profiler(self.stream_idx, 'detect'):
-                detections = self.detector.postprocess(self.stream_idx)
+            for stream_idx in range(0, self.stream_num):
+                threads[stream_idx].join()
 
-            with Profiler(self.stream_idx, 'extract1'):
-                cls_bboxes = np.split(detections.tlbr, find_split_indices(detections.label))
-                for extractor, bboxes in zip(self.extractors, cls_bboxes):
-                    extractor.extract_async(frame, bboxes)
+            with Profiler(0, 'detect'):
+                detections = self.detector.postprocess(True)
 
-            with Profiler(self.stream_idx, 'kalman', aggregate=True):
-                self.tracker.apply_kalman()
+            for stream_idx in range(0, self.stream_num):
+                with Profiler(stream_idx, 'extract1'):
+                    cls_bboxes = np.split(detections[stream_idx].tlbr, find_split_indices(detections[stream_idx].label))
+                    for extractor, bboxes in zip(self.extractors[stream_idx], cls_bboxes):
+                        extractor.extract_async(frames[stream_idx], bboxes)
 
-            with Profiler(self.stream_idx, 'extract2'):
-                embeddings = []
-                for extractor in self.extractors:
-                    embeddings.append(extractor.postprocess())
-                embeddings = np.concatenate(embeddings) if len(embeddings) > 1 else embeddings[0]
+            for stream_idx in range(0, self.stream_num):
+                self.trackers[stream_idx].apply_kalman(stream_idx)
 
-            with Profiler(self.stream_idx, 'assoc'):
-                self.tracker.update(self.frame_count, detections, embeddings)
+            embeddings = [[]] * self.stream_num
+            for stream_idx in range(0, self.stream_num):
+                with Profiler(stream_idx, 'extract2'):
+                    for extractor in self.extractors[stream_idx]:
+                        embeddings[stream_idx].append(extractor.postprocess())
+                    embeddings[stream_idx] = np.concatenate(embeddings[stream_idx]) if len(embeddings[stream_idx]) > 1 else embeddings[stream_idx][0]
+
+            for stream_idx in range(0, self.stream_num):
+                with Profiler(stream_idx, 'assoc'):
+                    self.trackers[stream_idx].update(self.frame_count, detections[stream_idx], embeddings[stream_idx])
         else:
-            with Profiler(self.stream_idx, 'track'):
-                self.tracker.track(self.stream_idx, frame)
-            with Profiler(self.stream_idx, 'read'):
-                next_frame = stream.read()
+            threads = []
+            for stream_idx in range(0, self.stream_num):
+                threads.append(threading.Thread(target=self.trackers[stream_idx].track, args=(stream_idx, frames[stream_idx], )))
+                threads[stream_idx].start()
+
+            next_frames = stream.read()
+
+            for stream_idx in range(0, self.stream_num):
+                threads[stream_idx].join()
 
         if self.draw:
-            self._draw(frame, detections)
+            self._draw(frames, detections)
         self.frame_count += 1
 
-        return next_frame
+        return next_frames
 
     @staticmethod
     def print_timing_info(stream_idx):
@@ -192,9 +208,11 @@ class MOT:
                      f"{Profiler.get_avg_millis(stream_idx, 'extract'):>6.3f} ms")
         LOGGER.debug(f"{'  association time:':<39}{Profiler.get_avg_millis(stream_idx, 'assoc'):>6.3f} ms")
 
-    def _draw(self, frame, detections):
-        visible_tracks = list(self.visible_tracks())
-        self.visualizer.render(frame, visible_tracks, detections, self.tracker.klt_bboxes.values(),
-                               self.tracker.flow.prev_bg_keypoints, self.tracker.flow.bg_keypoints)
-        cv2.putText(frame, f'visible: {len(visible_tracks)}', (30, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, 0, 2, cv2.LINE_AA)
+    def _draw(self, frames, detections):
+        for stream_idx in range(0, self.stream_num):
+            visible_tracks = list(self.visible_tracks()[stream_idx])
+            tracker = self.trackers[stream_idx]
+            self.visualizer.render(frames[stream_idx], visible_tracks, detections[stream_idx], tracker.klt_bboxes.values(),
+                                tracker.flow.prev_bg_keypoints, tracker.flow.bg_keypoints)
+            cv2.putText(frames[stream_idx], f'visible: {len(visible_tracks)}', (30, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, 0, 2, cv2.LINE_AA)

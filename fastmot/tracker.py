@@ -10,6 +10,7 @@ from .kalman_filter import MeasType, KalmanFilter
 from .utils.distance import Metric, cdist, iou_dist
 from .utils.matching import linear_assignment, greedy_match, fuse_motion, gate_cost
 from .utils.rect import as_tlbr, to_tlbr, ios, bbox_ious, find_occluded
+from .utils import Profiler
 
 
 LOGGER = logging.getLogger(__name__)
@@ -145,7 +146,7 @@ class MultiTracker:
             The next frame.
         """
         self.compute_flow(stream_idx, frame)
-        self.apply_kalman()
+        self.apply_kalman(stream_idx)
 
     def compute_flow(self, stream_idx, frame):
         """Computes optical flow to estimate tracklet positions and camera motion.
@@ -154,33 +155,35 @@ class MultiTracker:
         ----------
         frame : ndarray
             The next frame.
-        """
-        active_tracks = [track for track in self.tracks.values() if track.active]
-        self.klt_bboxes, self.homography = self.flow.predict(stream_idx, frame, active_tracks)
-        if self.homography is None:
-            # clear tracks when camera motion cannot be estimated
-            self.tracks.clear()
+        """        
+        with Profiler(stream_idx, 'compute_flow'):
+            active_tracks = [track for track in self.tracks.values() if track.active]
+            self.klt_bboxes, self.homography = self.flow.predict(stream_idx, frame, active_tracks)
+            if self.homography is None:
+                # clear tracks when camera motion cannot be estimated
+                self.tracks.clear()
 
-    def apply_kalman(self):
+    def apply_kalman(self, stream_idx):
         """Performs kalman filter predict and update from KLT measurements.
         The function should be called after `compute_flow`.
         """
-        for trk_id, track in list(self.tracks.items()):
-            mean, cov = track.state
-            mean, cov = self.kf.warp(mean, cov, self.homography)
-            mean, cov = self.kf.predict(mean, cov)
-            if trk_id in self.klt_bboxes:
-                klt_tlbr = self.klt_bboxes[trk_id]
-                # give large KLT uncertainty for occluded tracks
-                # usually these with large age and low inlier ratio
-                std_multiplier = max(self.age_penalty * track.age, 1) / track.inlier_ratio
-                mean, cov = self.kf.update(mean, cov, klt_tlbr, MeasType.FLOW, std_multiplier)
-            next_tlbr = as_tlbr(mean[:4])
-            track.update(next_tlbr, (mean, cov))
-            if ios(next_tlbr, self.frame_rect) < 0.5:
-                if track.confirmed:
-                    LOGGER.info(f"{'Out:':<14}{track}")
-                self._mark_lost(trk_id)
+        with Profiler(stream_idx, 'kalman'):
+            for trk_id, track in list(self.tracks.items()):
+                mean, cov = track.state
+                mean, cov = self.kf.warp(mean, cov, self.homography)
+                mean, cov = self.kf.predict(mean, cov)
+                if trk_id in self.klt_bboxes:
+                    klt_tlbr = self.klt_bboxes[trk_id]
+                    # give large KLT uncertainty for occluded tracks
+                    # usually these with large age and low inlier ratio
+                    std_multiplier = max(self.age_penalty * track.age, 1) / track.inlier_ratio
+                    mean, cov = self.kf.update(mean, cov, klt_tlbr, MeasType.FLOW, std_multiplier)
+                next_tlbr = as_tlbr(mean[:4])
+                track.update(next_tlbr, (mean, cov))
+                if ios(next_tlbr, self.frame_rect) < 0.5:
+                    if track.confirmed:
+                        LOGGER.info(f"{'Out:':<14}{track}")
+                    self._mark_lost(trk_id)
 
     def update(self, frame_id, detections, embeddings):
         """Associates detections to tracklets based on motion and feature embeddings.

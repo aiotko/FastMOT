@@ -13,8 +13,6 @@ import fastmot
 import fastmot.models
 from fastmot.utils import ConfigDecoder, Profiler
 
-frame_count = {}
-
 def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger, profiler, detector):
     with profiler:
         try:
@@ -25,8 +23,8 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
                     frame = stream.read()
                 while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
                     with Profiler(stream_num, 'read'):
-                        #if count == 4000:
-                        #    break
+                        if count == 1000:
+                            break
                         if frame is None:
                             break
                         count += 1
@@ -122,49 +120,92 @@ def main():
             label_map = label_file.read().splitlines()
             fastmot.models.set_label_map(label_map)
 
-    streams = []
-    mots = [] if args.mot else None
-    txts = [] if args.txt else None
-    mot = None
-    txt = None
+    txts = []
+    mot = args.mot
+    txt = args.txt
     video_window_name = None
     draw = args.show or args.output_uri is not None or args.output_rtsp is not None    
 
     try:
         stream_num = len(args.input_uri)
         
-        detector = fastmot.YOLODetector(stream_num, config.resize_to, class_ids=(1,), **vars(config.mot_cfg.yolo_detector_cfg))
+        with Profiler(0, 'app') as prof:
+            detector = fastmot.YOLODetector(stream_num, config.resize_to, class_ids=(1,), **vars(config.mot_cfg.yolo_detector_cfg))
+            stream = fastmot.VideoIO(config.resize_to, stream_num, args.input_uri, args.output_uri, args.output_rtsp, **vars(config.stream_cfg))
 
-        threads = []        
-        for stream_idx in range(0, stream_num):
-            with Profiler(stream_idx, 'app') as prof:
-                output_rtsp = args.output_rtsp[stream_idx] if args.output_rtsp is not None else None
-                output_uri = args.output_uri[stream_idx] if args.output_uri is not None else None
-                streams.append(fastmot.VideoIO(config.resize_to, args.input_uri[stream_idx], output_uri, output_rtsp, **vars(config.stream_cfg)))
-                if args.mot:
-                    mot = fastmot.MOT(stream_idx, stream_num, detector, config.resize_to, **vars(config.mot_cfg), draw=draw)
-                    mots.append(mot)
-                    mots[stream_idx].reset(streams[stream_idx].cap_dt)
+            if args.mot:
+                mot = fastmot.MOT(stream_num, detector, config.resize_to, **vars(config.mot_cfg), draw=draw)
+                mot.reset(stream.cap_dt)
                 
                 if args.txt is not None:
-                    Path(args.txt[stream_idx]).parent.mkdir(parents=True, exist_ok=True)
-                    txt = open(args.txt[stream_idx], 'w')
-                    txts.append(txt)
+                    for stream_idx in range(0, stream_num):
+                        Path(args.txt[stream_idx]).parent.mkdir(parents=True, exist_ok=True)
+                        txt = open(args.txt[stream_idx], 'w')
+                        txts.append(txt)
 
-                if args.show:
-                    video_window_name = f'Video {stream_idx}'
-                    cv2.namedWindow(video_window_name, cv2.WINDOW_AUTOSIZE)
+                # if args.show:
+                #     video_window_name = f'Video {stream_idx}'
+                #     cv2.namedWindow(video_window_name, cv2.WINDOW_AUTOSIZE)
 
                 logger.info('Starting video capture...')
-                streams[stream_idx].start_capture()
+                stream.start_capture()            
+            try:
+                with Profiler(0, 'effective'):
+                    frame_count = 0
+                    t = time.time()
+                    frames = stream.read()
+                    while not args.show or cv2.getWindowProperty(video_window_name, 0) >= 0:
+                        with Profiler(0, 'read'):
+                            #frames = stream.read()
+                            if frame_count == 2000:
+                                break
+                            if frames is None:
+                                break
+                            frame_count += 1
+                            if frame_count % 100 == 0:
+                                logger.debug(f"FPS: {100 / (time.time() - t):>3.0f}")
+                                t = time.time()
 
-                threads.append(threading.Thread(target=do_magic, args=(config, streams[stream_idx], stream_idx, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof, detector, )))
+                        if mot is not None:
+                            with Profiler(0, 'mot'):
+                                frames = mot.step(frames, stream)
+
+                            if txts is not None:
+                                for stream_idx in range(0, stream_num):
+                                    with Profiler(stream_idx, 'txt'):
+                                        for track in mot.visible_tracks()[stream_idx]:
+                                            tl = track.tlbr[:2] / config.resize_to * stream.resolution
+                                            br = track.tlbr[2:] / config.resize_to * stream.resolution
+                                            w, h = br - tl + 1
+                                            txts[stream_idx].write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
+                                                    f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
+                        
+                        # if show:
+                        #     with Profiler(stream_num, 'show'):
+                        #         cv2.imshow(video_window_name, frame)
+                        #         if cv2.waitKey(1) & 0xFF == 27:
+                        #             break
+
+                        # if args.output_uri is not None:
+                        #     stream.write(frames)
+
+                        # if output_rtsp is not None:
+                        #     with Profiler(stream_num, 'rtsp'):
+                        #         stream.write_rtsp(frame)
+            finally:
+                if txt is not None:
+                    txt.close()
+                stream.release()
+
+
+        # threads = []
+        # threads.append(threading.Thread(target=do_magic, args=(config, streams[stream_idx], stream_idx, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof, detector, )))
         
-        for stream_idx in range(0, stream_num):
-            threads[stream_idx].start()
+        # for stream_idx in range(0, stream_num):
+        #     threads[stream_idx].start()
 
-        for stream_idx in range(0, stream_num):
-            threads[stream_idx].join()
+        # for stream_idx in range(0, stream_num):
+        #     threads[stream_idx].join()
 
         avg_fps_msg = f"{'Average FPS: ':<39}"
         eff_fps_msg = f"{'Effective FPS: ':<39}"
@@ -172,7 +213,10 @@ def main():
         eff_time_msg = f"{'Effective time:':<39}"
         frm_cnt_msg = f"{'Frames count:':<39}"
         eff_time_per_frm_msg = f"{'Effective time:':<39}"
+        cap_frm_msg = f"{'Capture frames:':<39}"
         read_frm_msg = f"{'Read frames:':<39}"
+        read_frm_cv2_res_msg = f"{'  cv2.resize:':<39}"
+        cap_frm_read_ffmpeg_msg = f"{'  read ffmpeg stream:':<39}"
         wrt_ann_msg = f"{'Write annonations':<39}"
         show_msg = f"{'Show:':<39}"
         wrt_frm_msg = f"{'Write frames':<39}"
@@ -182,7 +226,7 @@ def main():
         prep_msg = f"{'  detect preprocess time:':<39}"
         det_prep_msg = f"{'    preprocess time:':<39}"
         det_infer_async_msg = f"{'    infer async time:':<39}"
-        track_msg =f"{'  track time:':<39}"
+        compute_flow_msg =f"{'  compute_flow time:':<39}"
         f1_msg = f"{'    f1:':<39}"
         f2_msg = f"{'    f2:':<39}"
         f3_msg = f"{'    f3:':<39}"
@@ -210,15 +254,18 @@ def main():
         ass_msg = f"{'  association time:':<39}"
 
         for stream_idx in range(0, stream_num):
-            avg_fps = round(frame_count[stream_idx] * 1000 / Profiler.get_avg_millis(stream_idx, 'app'))
-            effective_fps = round(frame_count[stream_idx] * 1000 / Profiler.get_avg_millis(stream_idx, 'effective'))
+            avg_fps = round(frame_count * 1000 / Profiler.get_avg_millis(stream_idx, 'app')) if stream_idx == 0 else 0
+            effective_fps = round(frame_count * 1000 / Profiler.get_avg_millis(stream_idx, 'effective')) if stream_idx == 0 else 0
 
             avg_fps_msg += f"{avg_fps:>8d}  "
             eff_fps_msg += f"{effective_fps:>8d}  "
             tot_time_msg += f"{Profiler.get_millis(stream_idx, 'app') / 1000 :>8.0f}  "
             eff_time_msg += f"{Profiler.get_millis(stream_idx, 'effective') / 1000 :>8.0f}  "
-            frm_cnt_msg += f"{frame_count[stream_idx]:>8d}  "
-            eff_time_per_frm_msg += f"{Profiler.get_millis(stream_idx, 'effective') / frame_count[stream_idx]:>8.0f}  "
+            frm_cnt_msg += f"{frame_count:>8d}  "
+            eff_time_per_frm_msg += f"{Profiler.get_millis(stream_idx, 'effective') / frame_count:>8.0f}  "
+            cap_frm_msg += f"{Profiler.get_millis(stream_idx, 'capture_frames'):>8.0f}  "
+            cap_frm_read_ffmpeg_msg += f"{Profiler.get_millis(stream_idx, 'read_ffmpeg'):>8.0f}  "
+            read_frm_cv2_res_msg += f"{Profiler.get_millis(stream_idx, 'cv2_resize'):>8.0f}  "
             read_frm_msg += f"{Profiler.get_millis(stream_idx, 'read'):>8.0f}  "
             wrt_ann_msg += f"{Profiler.get_millis(stream_idx, 'txt'):>8.0f}  "
             show_msg += f"{Profiler.get_millis(stream_idx, 'show'):>8.0f}  "
@@ -229,7 +276,7 @@ def main():
             prep_msg += f"{Profiler.get_millis(stream_idx, 'preproc'):>8.0f}  "
             det_prep_msg += f"{Profiler.get_millis(stream_idx, 'detect_preproc'):>8.0f}  "
             det_infer_async_msg += f"{Profiler.get_millis(stream_idx, 'detect_infer_async'):>8.0f}  "
-            track_msg += f"{Profiler.get_millis(stream_idx, 'track'):>8.0f}  "
+            compute_flow_msg += f"{Profiler.get_millis(stream_idx, 'compute_flow'):>8.0f}  "
             f1_msg += f"{Profiler.get_millis(stream_idx, 'f1'):>8.0f}  "
             f2_msg += f"{Profiler.get_millis(stream_idx, 'f2'):>8.0f}  "
             f3_msg += f"{Profiler.get_millis(stream_idx, 'f3'):>8.0f}  "
@@ -262,8 +309,11 @@ def main():
         logger.debug(frm_cnt_msg)
         logger.info(tot_time_msg + "s")
         logger.debug(eff_time_msg + "s")
-        logger.debug(5 * stream_num * '=' + '=============== Per frame ===============' + 5 * stream_num * '=')
+        logger.debug(5 * stream_num * '=' + '=========================================' + 5 * stream_num * '=')
+        logger.debug(cap_frm_msg + "ms")
+        logger.debug(cap_frm_read_ffmpeg_msg + "ms")
         logger.debug(read_frm_msg + "ms")
+        logger.debug(read_frm_cv2_res_msg + "ms")
         logger.debug(wrt_ann_msg + "ms")
         logger.debug(show_msg + "ms")
         logger.debug(wrt_frm_msg + "ms")
@@ -273,7 +323,12 @@ def main():
         logger.debug(prep_msg + "ms")
         logger.debug(det_prep_msg + "ms")
         logger.debug(det_infer_async_msg + "ms")
-        logger.debug(track_msg + "ms")
+        logger.debug(det_msg + "ms")
+        logger.debug(det_wait_msg + "ms")
+        logger.debug(det_wait_sync_msg + "ms")
+        logger.debug(det_sync_msg + "ms")
+        logger.debug(det_out_msg + "ms")
+        logger.debug(compute_flow_msg + "ms")
         logger.debug(f1_msg +"ms")
         logger.debug(f2_msg +"ms")
         logger.debug(f3_msg +"ms")
@@ -290,11 +345,6 @@ def main():
         logger.debug(f13_msg +"ms")
         logger.debug(f14_msg +"ms")
         logger.debug(f15_msg +"ms")
-        logger.debug(det_msg + "ms")
-        logger.debug(det_wait_msg + "ms")
-        logger.debug(det_wait_sync_msg + "ms")
-        logger.debug(det_sync_msg + "ms")
-        logger.debug(det_out_msg + "ms")
         logger.debug(extr1_msg + "ms")
         logger.debug(kalman_msg + "ms")
         logger.debug(extr2_msg + "ms")
