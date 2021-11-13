@@ -40,7 +40,7 @@ with open(args.input_csv, newline='') as csvfile:
 capture = cv2.VideoCapture(args.input_mp4)
 try:
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = int(capture.get(cv2.CAP_PROP_FPS))
+    fps = capture.get(cv2.CAP_PROP_FPS)
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
 finally:
@@ -49,7 +49,7 @@ finally:
 # 4. Generate JSON
 result = {
     "framesCount": int(frame_count),
-    "fps": int(fps),
+    "fps": fps,
     "w": width,
     "h": height,
     "data": data
