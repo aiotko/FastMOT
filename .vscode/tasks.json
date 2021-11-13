@@ -10,7 +10,7 @@
 				"dockerfile": "${workspaceFolder}/Dockerfile",
 				"context": "${workspaceFolder}",
 				"pull": true,
-				"customOptions": "--build-arg TRT_IMAGE_VERSION=21.05 --build-arg CUPY_NVCC_GENERATE_CODE='arch=compute_75,code=sm_75'"
+				"customOptions": "--build-arg TRT_IMAGE_VERSION=21.05 --build-arg CUPY_NVCC_GENERATE_CODE='arch=compute_86,code=sm_86'"
 			}
 		},
 		{
