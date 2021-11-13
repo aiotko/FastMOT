@@ -13,58 +13,6 @@ import fastmot
 import fastmot.models
 from fastmot.utils import ConfigDecoder, Profiler
 
-def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show, video_window_name, logger, profiler, detector):
-    with profiler:
-        try:
-            with Profiler(stream_num, 'effective'):
-                count = 0
-                t = time.time()
-                with Profiler(stream_num, 'read'):
-                    frame = stream.read()
-                while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
-                    with Profiler(stream_num, 'read'):
-                        if count == 1000:
-                            break
-                        if frame is None:
-                            break
-                        count += 1
-                        if count % 100 == 0:
-                            logger.debug(f"FPS ({stream_num}): {100 / (time.time() - t):>3.0f}")
-                            t = time.time()
-
-                    if mot is not None:
-                        with Profiler(stream_num, 'mot'):
-                            next_frame = mot.step(frame, stream)
-                        with Profiler(stream_num, 'txt'):
-                            if txt is not None:
-                                for track in mot.visible_tracks():
-                                    tl = track.tlbr[:2] / config.resize_to * stream.resolution
-                                    br = track.tlbr[2:] / config.resize_to * stream.resolution
-                                    w, h = br - tl + 1
-                                    txt.write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
-                                            f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
-
-                    if show:
-                        with Profiler(stream_num, 'show'):
-                            cv2.imshow(video_window_name, frame)
-                            if cv2.waitKey(1) & 0xFF == 27:
-                                break
-
-                    if output_uri is not None:
-                        with Profiler(stream_num, 'write'):
-                            stream.write(frame)
-
-                    if output_rtsp is not None:
-                        with Profiler(stream_num, 'rtsp'):
-                            stream.write_rtsp(frame)
-
-                    frame = next_frame
-                frame_count[stream_num] = count
-        finally:
-            if txt is not None:
-                txt.close()
-            stream.release()
-            detector.stream_num -= 1 
 
 
 def main():
@@ -123,7 +71,7 @@ def main():
     txts = []
     mot = args.mot
     txt = args.txt
-    video_window_name = None
+    video_window_names = []
     draw = args.show or args.output_uri is not None or args.output_rtsp is not None    
 
     try:
@@ -143,9 +91,10 @@ def main():
                         txt = open(args.txt[stream_idx], 'w')
                         txts.append(txt)
 
-                # if args.show:
-                #     video_window_name = f'Video {stream_idx}'
-                #     cv2.namedWindow(video_window_name, cv2.WINDOW_AUTOSIZE)
+                if args.show:
+                    for stream_idx in range(0, stream_num):
+                        video_window_names.append(f'Video {stream_idx}')
+                        cv2.namedWindow(video_window_names[stream_idx], cv2.WINDOW_AUTOSIZE)
 
                 logger.info('Starting video capture...')
                 stream.start_capture()            
@@ -154,7 +103,7 @@ def main():
                     frame_count = 0
                     t = time.time()
                     frames = stream.read()
-                    while not args.show or cv2.getWindowProperty(video_window_name, 0) >= 0:
+                    while not args.show or cv2.getWindowProperty(video_window_names[0], 0) >= 0:
                         with Profiler(0, 'read'):
                             #frames = stream.read()
                             if frame_count == 2000:
@@ -168,7 +117,7 @@ def main():
 
                         if mot is not None:
                             with Profiler(0, 'mot'):
-                                frames = mot.step(frames, stream)
+                                next_frames = mot.step(frames, stream)
 
                             if txts is not None:
                                 for stream_idx in range(0, stream_num):
@@ -180,11 +129,15 @@ def main():
                                             txts[stream_idx].write(f'{mot.frame_count},{track.trk_id},{tl[0]:.6f},{tl[1]:.6f},'
                                                     f'{w:.6f},{h:.6f},{track.conf:.6f},-1,-1,-1\n')
                         
-                        # if show:
-                        #     with Profiler(stream_num, 'show'):
-                        #         cv2.imshow(video_window_name, frame)
-                        #         if cv2.waitKey(1) & 0xFF == 27:
-                        #             break
+                        if args.show:
+                            break_requested = False
+                            for stream_idx in range(0, stream_num):
+                                with Profiler(stream_idx, 'show'):
+                                    cv2.imshow(video_window_names[stream_idx], frames[stream_idx])
+                                    if cv2.waitKey(1) & 0xFF == 27:
+                                        break_requested = True
+                            if break_requested:
+                                break
 
                         # if args.output_uri is not None:
                         #     stream.write(frames)
@@ -192,6 +145,8 @@ def main():
                         # if output_rtsp is not None:
                         #     with Profiler(stream_num, 'rtsp'):
                         #         stream.write_rtsp(frame)
+
+                        frames = next_frames
             finally:
                 if txt is not None:
                     txt.close()
