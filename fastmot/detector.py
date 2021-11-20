@@ -2,6 +2,7 @@ from collections import defaultdict
 from pathlib import Path
 import configparser
 import abc
+import threading
 import time
 import numpy as np
 from fastmot.utils.profiler import Profiler
@@ -277,9 +278,14 @@ class YOLODetector(Detector):
     def detect_async(self, frames, with_profiler):
         """Detects objects asynchronously."""
         if with_profiler:
-            for stream_idx in range(0, self.stream_num):
-                with Profiler(stream_idx, 'detect_preproc'):
-                        self._preprocess(stream_idx, frames[stream_idx])
+            threads = []
+            with Profiler(0, 'detect_preproc'):
+                for stream_idx in range(0, self.stream_num):
+                    threads.append(threading.Thread(target=self._preprocess, args=(stream_idx, frames[stream_idx], )))
+                    threads[stream_idx].start()
+
+                for stream_idx in range(0, self.stream_num):
+                    threads[stream_idx].join()
 
             with Profiler(0, 'detect_infer_async'):
                 self.backend.infer_async(from_device=True)

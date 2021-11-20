@@ -1,3 +1,4 @@
+import multiprocessing
 import threading
 from types import SimpleNamespace
 from enum import Enum
@@ -12,6 +13,9 @@ from .utils import Profiler
 from .utils.visualization import Visualizer
 from .utils.numba import find_split_indices
 
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Process
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,6 +26,8 @@ class DetectorType(Enum):
     PUBLIC = 2
 
 
+def my_track(arg):
+    arg[0].track(arg[1], arg[2])
 class MOT:
     def __init__(self, 
                  stream_num, 
@@ -143,22 +149,38 @@ class MOT:
                 detections = self.detector(frames)
                 for stream_idx in range(0, self.stream_num):
                     self.trackers[stream_idx].init(frames[stream_idx], detections[stream_idx])
-
-            next_frames = stream.read()
+            with Profiler(0, 'read'):
+                next_frames = stream.read()
         elif self.frame_count % self.detector_frame_skip == 0:
             with Profiler(0, 'preproc'):
                 self.detector.detect_async(frames, True)
 
             threads = []
-            for stream_idx in range(0, self.stream_num):
-                threads.append(threading.Thread(target=self.trackers[stream_idx].compute_flow, args=(stream_idx, frames[stream_idx], )))
-                threads[stream_idx].start()
+            with Profiler(0, 'track'):
+                for stream_idx in range(0, self.stream_num):
+                    threads.append(threading.Thread(target=self.trackers[stream_idx].compute_flow, args=(stream_idx, frames[stream_idx], )))
+                    threads[stream_idx].start()
+            # with Profiler(0, 'track'):
+            #     pool = ThreadPoolExecutor(max_workers=21)
+            #     for stream_idx in range(0, self.stream_num):
+            #         pool.submit(self.trackers[stream_idx].compute_flow, stream_idx, frames[stream_idx])
+            # processes = []
+            # with Profiler(0, 'track'):
+            #     for stream_idx in range(0, self.stream_num):
+            #         ctx = multiprocessing.get_context('forkserver')
+            #         p = ctx.Process(target=self.trackers[stream_idx].compute_flow, args=(stream_idx, frames[stream_idx], ))
+            #         p.start()
+            #         processes.append(p)
 
             with Profiler(0, 'read'):
                 next_frames = stream.read()
-
+            
+            #with Profiler(0, 'track'):
             for stream_idx in range(0, self.stream_num):
                 threads[stream_idx].join()
+            # pool.shutdown(wait=True)
+            # for stream_idx in range(0, self.stream_num):
+            #     processes[stream_idx].join()
 
             with Profiler(0, 'detect'):
                 detections = self.detector.postprocess(True)
@@ -184,14 +206,41 @@ class MOT:
                     self.trackers[stream_idx].update(self.frame_count, detections[stream_idx], embeddings[stream_idx])
         else:
             threads = []
-            for stream_idx in range(0, self.stream_num):
-                threads.append(threading.Thread(target=self.trackers[stream_idx].track, args=(stream_idx, frames[stream_idx], )))
-                threads[stream_idx].start()
+            with Profiler(0, 'track'):
+                for stream_idx in range(0, self.stream_num):
+                    threads.append(threading.Thread(target=self.trackers[stream_idx].track, args=(stream_idx, frames[stream_idx], )))
+                    threads[stream_idx].start()
+            # with Profiler(0, 'track'):
+            #     pool = ThreadPoolExecutor(max_workers=21)
+            #     for stream_idx in range(0, self.stream_num):
+            #         pool.submit(self.trackers[stream_idx].track, stream_idx, frames[stream_idx])
 
-            next_frames = stream.read()
+            # processes = []
+            # with Profiler(0, 'track'):
+            #     for stream_idx in range(0, self.stream_num):
+            #         ctx = multiprocessing.get_context('forkserver')
+            #         p = ctx.Process(target=self.trackers[stream_idx].track, args=(stream_idx, frames[stream_idx], ))
+            #         p.start()
+            #         processes.append(p)
 
+            # with Profiler(0, 'track'):
+            #     arg = []
+            #     for stream_idx in range(0, self.stream_num):
+            #         arg.append([self.trackers[stream_idx].track, stream_idx, frames[stream_idx]])
+            #     pool = multiprocessing.Pool(processes=self.stream_num)     
+            #     pool.map(my_track, arg)           
+            
+            with Profiler(0, 'read'):
+                next_frames = stream.read()
+
+            #with Profiler(0, 'track'):
             for stream_idx in range(0, self.stream_num):
                 threads[stream_idx].join()
+            # pool.shutdown(wait=True)
+            # for stream_idx in range(0, self.stream_num):
+            #     processes[stream_idx].join()
+            # pool.close()
+            # pool.join()
 
         if self.draw:
             self._draw(frames, detections)

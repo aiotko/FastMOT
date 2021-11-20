@@ -169,18 +169,21 @@ def main():
         frm_cnt_msg = f"{'Frames count:':<39}"
         eff_time_per_frm_msg = f"{'Effective time:':<39}"
         cap_frm_msg = f"{'Capture frames:':<39}"
-        read_frm_msg = f"{'Read frames:':<39}"
-        read_frm_cv2_res_msg = f"{'  cv2.resize:':<39}"
+        cap_frm_np_empty_msg = f"{'  np.empty:':<39}"
         cap_frm_read_ffmpeg_msg = f"{'  read ffmpeg stream:':<39}"
+        cap_frm_process_frame_msg = f"{'  process_frame:':<39}"
         wrt_ann_msg = f"{'Write annonations':<39}"
         show_msg = f"{'Show:':<39}"
         wrt_frm_msg = f"{'Write frames':<39}"
         out_rtsp_msg = f"{'Output RTSP:':<39}"
         mot_msg = f"{'MOT:':<39}"
         init_msg = f"{'  init time:':<39}"
+        read_frm_msg = f"{'  read frames:':<39}"
+        read_frm_cv2_res_msg = f"{'    cv2.resize:':<39}"        
         prep_msg = f"{'  detect preprocess time:':<39}"
         det_prep_msg = f"{'    preprocess time:':<39}"
         det_infer_async_msg = f"{'    infer async time:':<39}"
+        track_msg =f"{'  track time:':<39}"
         compute_flow_msg =f"{'  compute_flow time:':<39}"
         f1_msg = f"{'    f1:':<39}"
         f2_msg = f"{'    f2:':<39}"
@@ -219,7 +222,9 @@ def main():
             frm_cnt_msg += f"{frame_count:>8d}  "
             eff_time_per_frm_msg += f"{Profiler.get_millis(stream_idx, 'effective') / frame_count:>8.0f}  "
             cap_frm_msg += f"{Profiler.get_millis(stream_idx, 'capture_frames'):>8.0f}  "
+            cap_frm_np_empty_msg += f"{Profiler.get_millis(stream_idx, 'np_empty'):>8.0f}  "
             cap_frm_read_ffmpeg_msg += f"{Profiler.get_millis(stream_idx, 'read_ffmpeg'):>8.0f}  "
+            cap_frm_process_frame_msg += f"{Profiler.get_millis(stream_idx, 'process_frame'):>8.0f}  "
             read_frm_cv2_res_msg += f"{Profiler.get_millis(stream_idx, 'cv2_resize'):>8.0f}  "
             read_frm_msg += f"{Profiler.get_millis(stream_idx, 'read'):>8.0f}  "
             wrt_ann_msg += f"{Profiler.get_millis(stream_idx, 'txt'):>8.0f}  "
@@ -231,6 +236,7 @@ def main():
             prep_msg += f"{Profiler.get_millis(stream_idx, 'preproc'):>8.0f}  "
             det_prep_msg += f"{Profiler.get_millis(stream_idx, 'detect_preproc'):>8.0f}  "
             det_infer_async_msg += f"{Profiler.get_millis(stream_idx, 'detect_infer_async'):>8.0f}  "
+            track_msg += f"{Profiler.get_millis(stream_idx, 'track'):>8.0f}  "
             compute_flow_msg += f"{Profiler.get_millis(stream_idx, 'compute_flow'):>8.0f}  "
             f1_msg += f"{Profiler.get_millis(stream_idx, 'f1'):>8.0f}  "
             f2_msg += f"{Profiler.get_millis(stream_idx, 'f2'):>8.0f}  "
@@ -266,15 +272,17 @@ def main():
         logger.debug(eff_time_msg + "s")
         logger.debug(5 * stream_num * '=' + '=========================================' + 5 * stream_num * '=')
         logger.debug(cap_frm_msg + "ms")
+        logger.debug(cap_frm_np_empty_msg + "ms")
         logger.debug(cap_frm_read_ffmpeg_msg + "ms")
-        logger.debug(read_frm_msg + "ms")
-        logger.debug(read_frm_cv2_res_msg + "ms")
+        logger.debug(cap_frm_process_frame_msg + "ms")
         logger.debug(wrt_ann_msg + "ms")
         logger.debug(show_msg + "ms")
         logger.debug(wrt_frm_msg + "ms")
         logger.debug(out_rtsp_msg + "ms")
         logger.debug(mot_msg + "ms")
         logger.debug(init_msg + "ms")
+        logger.debug(read_frm_msg + "ms")
+        logger.debug(read_frm_cv2_res_msg + "ms")        
         logger.debug(prep_msg + "ms")
         logger.debug(det_prep_msg + "ms")
         logger.debug(det_infer_async_msg + "ms")
@@ -283,6 +291,7 @@ def main():
         logger.debug(det_wait_sync_msg + "ms")
         logger.debug(det_sync_msg + "ms")
         logger.debug(det_out_msg + "ms")
+        logger.debug(track_msg + "ms")
         logger.debug(compute_flow_msg + "ms")
         logger.debug(f1_msg +"ms")
         logger.debug(f2_msg +"ms")

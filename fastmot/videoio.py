@@ -85,48 +85,29 @@ class VideoIO:
         self.exit_event = threading.Event()
         self.cap_thread = threading.Thread(target=self._capture_frames)
         
-        #input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-resize', f'{self.size[0]}x{self.size[1]}', '-r', f'{self.frame_rate}', '-rtsp_transport', 'tcp', '-i' , i] for i in input_uri]
-        #input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-resize', f'1920x1080', '-rtsp_transport', 'tcp', '-r', f'{self.frame_rate}', '-thread_queue_size', '4096', '-i' , i] for i in input_uri]
-        input_list = [['-hwaccel', 'cuda', '-c:v', 'h264_cuvid', '-rtsp_transport', 'tcp', '-r', f'{self.frame_rate}', '-thread_queue_size', '4096', '-i' , i] for i in input_uri]        
-        input_list = [item for sublist in input_list for item in sublist]
-        
-        #  DEV.LS h264                 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (decoders: h264 h264_v4l2m2m h264_cuvid ) (encoders: libx264 libx264rgb h264_nvenc h264_omx h264_v4l2m2m h264_vaapi nvenc nvenc_h264 )
-
-        out_file_names = [i.split('.')[-1].split(':')[0] + '.mp4' for i in input_uri]
-        output_list = [['-map', str(i), '-c:v', 'copy', out_file_names[i]] for i in range(0, len(input_uri))]
-        output_list = [item for sublist in output_list for item in sublist]
-        #'h264_nvenc', '-b:v', '5M' '-r', f'{self.frame_rate}',
-        command = [ 'ffmpeg',
+        self.source = []
+        for stream_idx in range(0, self.stream_num):
+            out_file_name = input_uri[stream_idx].split('.')[-1].split(':')[0] + '.mp4'
+            command = ['ffmpeg',
                     '-vsync', '0',
                     '-loglevel', 'warning',
-                    #'-hwaccel', 'cuda',
-                    # '-c:v', 'h264_cuvid',
-                    #'-resize', f'{self.size[0]}x{self.size[1]}',
-                    #'-rtsp_transport', 'tcp',
-                    #'-r', f'{self.frame_rate}',
-                  ]
-        command.extend(input_list)
-        command.extend(
-                  [
-                    #'-vf', f'scale={self.size[0]}:{self.size[1]}',
+                    '-hwaccel', 'cuda',
+                    '-c:v', 'h264_cuvid',
+                    '-resize', f'{self.size[0]}x{self.size[1]}',
+                    '-rtsp_transport', 'tcp',
+                    '-r', f'{self.frame_rate}',
+                    '-thread_queue_size', '4096', 
+                    '-i',
+                    input_uri[stream_idx],
                     '-f', 'image2pipe',
                     '-pix_fmt', 'bgr24',
                     '-vcodec', 'rawvideo',
-                    #'-r', f'{self.frame_rate}',
-                    '-filter_complex', f'vstack=inputs={self.stream_num}[v0];[v0]scale={self.size[0]}:{self.stream_num*self.size[1]}',
-                    '-'])
-        command.extend(output_list)
-        command.append('-y')
-
-                    #'-codec', 'copy',
-                    #'-profile:v', 'baseline',
-                    #'-s', '1920x1080',
-                    #'-start_number', '0',
-                    #'-hls_time', '10',
-                    #'-hls_list_size', '0',
-                    #'-f', 'hls',
-                    #f'qq{str(self.input_uri.split(".")[-1].split(":")[0])}.m38u']
-        self.source = subprocess.Popen(command, stdout = subprocess.PIPE, bufsize=10**8)
+                    '-',
+                    '-c:v', 'h264_nvenc',
+                    '-b:v', '5M',
+                    out_file_name,
+                    '-y']
+            self.source.append(subprocess.Popen(command, stdout = subprocess.PIPE, bufsize=10**8))
 
         # TODO: obtain real values from the stream for further usage
         width = self.size[0]
@@ -217,14 +198,8 @@ class VideoIO:
                 self.cond.wait()
             if len(self.frame_queue) == 0 and self.exit_event.is_set():
                 return None
-            frame = self.frame_queue.popleft()
+            frames = self.frame_queue.popleft()
             self.cond.notify()
-        # if self.do_resize:
-        #     frame = cv2.resize(frame, self.size)
-        # with Profiler(0, 'cv2_resize'):
-        #     frame = cv2.resize(frame, (self.size[0], self.size[1] * self.stream_num))
-        frames = [frame[y:y + self.size[1], 0:self.size[0]] for y in range(0, self.size[1] * self.stream_num, self.size[1])]
-
         return frames
 
     def write(self, frames):
@@ -243,8 +218,9 @@ class VideoIO:
         """Cleans up input and output sources."""
         self.stop_capture()
         if hasattr(self, 'source'):
-            self.source.stdout.close()
-            self.source.wait()
+            for source in self.source:
+                source.stdout.close()
+                source.wait()
         # if hasattr(self, 'writer'):
         #     for stream_idx in range(0, self.stream_num):
         #         self.writer[stream_idx].stdin.close()
@@ -253,7 +229,6 @@ class VideoIO:
             self.rtsp_writer_process.stdin.close()
             self.rtsp_writer_process.wait()
         return
-        self.source.release()
 
     def _gst_cap_pipeline(self):
         gst_elements = str(subprocess.check_output('gst-inspect-1.0'))
@@ -339,39 +314,46 @@ class VideoIO:
         )
         return pipeline
 
+    def read_frames(self, stream_idx, frames):
+        with Profiler(stream_idx, 'read_ffmpeg'):
+            source = self.source[stream_idx]
+            raw_image = source.stdout.read(self.size[0]*self.size[1]*3)
+            source.stdout.flush()
+
+        with Profiler(stream_idx, 'process_frame'):  
+            frames[stream_idx] = np.fromstring(raw_image, dtype='uint8')
+            if frames[stream_idx].shape[0] == self.size[0] * self.size[1] * 3:
+                frames[stream_idx].resize((self.size[1], self.size[0], 3))
+            else:
+                frames[stream_idx] = None
+
     def _capture_frames(self):
         while not self.exit_event.is_set():
             with Profiler(0, 'capture_frames'):
-                with Profiler(0, 'read_ffmpeg'):
-                    raw_image = self.source.stdout.read(self.stream_num*self.size[0]*self.size[1]*3)
-                frame = np.fromstring(raw_image, dtype='uint8')
-                ret = frame.shape[0] == self.stream_num * self.size[0] * self.size[1] * 3
-                if ret:
-                    frame = frame.reshape((self.stream_num * self.size[1], self.size[0], 3))
-                self.source.stdout.flush()
+                frames = [None] * self.stream_num
+                threads = []
+                for stream_idx in range(0, self.stream_num):
+                    threads.append(threading.Thread(target=self.read_frames, args=(stream_idx, frames, )))
+                    threads[stream_idx].start()
+                
+                for stream_idx in range(0, self.stream_num):
+                    threads[stream_idx].join()
+
                 if len(self.frame_queue) > 0:
                     LOGGER.debug(f'Buffer size: {len(self.frame_queue)}')
 
-                # with Profiler(0, 'read_ffmpeg'):
-                #     raw_image = self.source.stdout.read(self.stream_num*1920*1080*3)
-                # frame = np.fromstring(raw_image, dtype='uint8')
-                # ret = frame.shape[0] == self.stream_num*1920*1080*3
-                # if ret:
-                #     frame = frame.reshape((self.stream_num * 1080, 1920, 3))
-                # self.source.stdout.flush()
-
-            with self.cond:
-                if not ret:
-                    self.exit_event.set()
+                with self.cond:
+                    if all(f is None for f in frames):
+                        self.exit_event.set()
+                        self.cond.notify()
+                        break
+                    # keep unprocessed frames in the buffer for file
+                    if not self.is_live:
+                        while (len(self.frame_queue) == self.buffer_size and
+                            not self.exit_event.is_set()):
+                            self.cond.wait()
+                    self.frame_queue.append(frames)
                     self.cond.notify()
-                    break
-                # keep unprocessed frames in the buffer for file
-                if not self.is_live:
-                    while (len(self.frame_queue) == self.buffer_size and
-                           not self.exit_event.is_set()):
-                        self.cond.wait()
-                self.frame_queue.append(frame)
-                self.cond.notify()
 
     @staticmethod
     def _parse_uri(uri):
