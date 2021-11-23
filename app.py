@@ -163,9 +163,6 @@ def main():
                     video_window_name = f'Video {stream_idx}'
                     cv2.namedWindow(video_window_name, cv2.WINDOW_AUTOSIZE)
 
-                logger.info('Starting video capture...')
-                streams[stream_idx].start_capture()
-
                 threads.append(threading.Thread(target=do_magic, args=(config, streams[stream_idx], stream_idx, mot, output_uri, output_rtsp, txt, args.show, video_window_name, logger, prof, detector, )))
         
         for stream_idx in range(0, stream_num):
