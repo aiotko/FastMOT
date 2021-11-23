@@ -25,14 +25,30 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
                     frame = stream.read()
                 while not show or cv2.getWindowProperty(video_window_name, 0) >= 0:
                     with Profiler(stream_num, 'read'):
-                        #if count == 4000:
-                        #    break
+                        if count == 1000:
+                           break
                         if frame is None:
-                            break
+                            print(f' {output_uri.split(".")[0] if output_uri is not None else stream_num} - Bida')
+                            t0 = time.time()
+                            stream.nvDec = None
+                            frame = stream.read()
+                            if frame is None:
+                                print(f' {output_uri.split(".")[0] if output_uri is not None else stream_num} - Bida!!!!!')
+                            else:
+                                print(f' {output_uri.split(".")[0] if output_uri is not None else stream_num} - fixed in {time.time() - t0}s')
+                            continue
                         count += 1
                         if count % 100 == 0:
                             logger.debug(f"FPS ({stream_num}): {100 / (time.time() - t):>3.0f}")
                             t = time.time()
+
+                    if output_uri is not None:
+                        with Profiler(stream_num, 'write'):
+                            stream.write(frame)
+
+                    if output_rtsp is not None:
+                        with Profiler(stream_num, 'rtsp'):
+                            stream.write_rtsp(frame)
 
                     if mot is not None:
                         with Profiler(stream_num, 'mot'):
@@ -51,14 +67,6 @@ def do_magic(config, stream, stream_num, mot, output_uri, output_rtsp, txt, show
                             cv2.imshow(video_window_name, frame)
                             if cv2.waitKey(1) & 0xFF == 27:
                                 break
-
-                    if output_uri is not None:
-                        with Profiler(stream_num, 'write'):
-                            stream.write(frame)
-
-                    if output_rtsp is not None:
-                        with Profiler(stream_num, 'rtsp'):
-                            stream.write_rtsp(frame)
 
                     frame = next_frame
                 frame_count[stream_num] = count

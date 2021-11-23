@@ -7,10 +7,10 @@ import subprocess
 import threading
 import logging
 import cv2
+import PyNvCodec as nvc
 
 
 LOGGER = logging.getLogger(__name__)
-WITH_GSTREAMER = True
 
 
 class Protocol(Enum):
@@ -75,33 +75,12 @@ class VideoIO:
         self.protocol = self._parse_uri(self.input_uri)
         self.is_live = self.protocol != Protocol.IMAGE and self.protocol != Protocol.VIDEO
 
-        self.frame_queue = deque([], maxlen=self.buffer_size)
-        self.cond = threading.Condition()
-        self.exit_event = threading.Event()
-        self.cap_thread = threading.Thread(target=self._capture_frames)
-
-        command = [ 'ffmpeg',
-                    '-vsync', '0',
-                    #'-hwaccel', 'cuda',
-                    #'-c:v', 'h264_cuvid',
-                    #'-resize', '512x512',
-                    '-i', f'{self.input_uri}',
-                    '-vf', f'scale={self.size[0]}:{self.size[1]}',
-                    '-f', 'image2pipe',
-                    '-pix_fmt', 'bgr24',
-                    '-vcodec', 'rawvideo',
-                    #'-r', f'{self.frame_rate}',
-                    '-']#,
-                    #'-codec', 'copy',
-                    #'-profile:v', 'baseline',
-                    #'-s', '1920x1080',
-                    #'-start_number', '0',
-                    #'-hls_time', '10',
-                    #'-hls_list_size', '0',
-                    #'-f', 'hls',
-                    #f'qq{str(self.input_uri.split(".")[-1].split(":")[0])}.m38u']
-
-        self.source = subprocess.Popen(command, stdout = subprocess.PIPE, bufsize=10**8)
+        self.cc_ctx = nvc.ColorspaceConversionContext(nvc.ColorSpace.BT_601, nvc.ColorRange.MPEG)
+        self.rawSurface = None
+        self.nvDec = None
+        self.nvDwn = nvc.PySurfaceDownloader(self.size[0], self.size[1], nvc.PixelFormat.BGR, 0)
+        self.nvCvtNv12ToYuv420 = nvc.PySurfaceConverter(self.size[0], self.size[1], nvc.PixelFormat.NV12, nvc.PixelFormat.YUV420, 0)
+        self.nvCvtYuv420ToBgr = nvc.PySurfaceConverter(self.size[0], self.size[1], nvc.PixelFormat.YUV420, nvc.PixelFormat.BGR, 0)
 
         # TODO: obtain real values from the stream for further usage
         width = self.size[0]
@@ -113,29 +92,11 @@ class VideoIO:
             self.cap_fps = self.frame_rate # fallback to config if unknown
         LOGGER.info('%dx%d stream @ %d FPS', width, height, self.cap_fps)
 
+        self.nvEnc = None
         if self.output_uri is not None:
-            Path(self.output_uri).parent.mkdir(parents=True, exist_ok=True)
-
-            write_to_file_command = ['ffmpeg',
-                '-re',
-                '-f', 'rawvideo',
-                '-s', f'{self.size[0]}x{self.size[1]}',
-                '-pixel_format', 'bgr24',
-                '-r', '50',
-                '-i', '-',
-                '-pix_fmt', 'yuv420p',
-                '-c:v', 'h264_nvenc',
-                '-preset:v', 'llhq',
-                '-profile:v', 'high',                
-                '-bufsize', '64M',
-                '-maxrate', '4M',
-                '-y',
-                '-f', 'mp4',
-                self.output_uri
-                #'-muxdelay', '0.1'
-            ]
-
-            self.writer = subprocess.Popen(write_to_file_command, stdin=subprocess.PIPE)
+            self.output_file = open(self.output_uri, "wb")
+            self.nvEnc = nvc.PyNvEncoder({'preset': 'P1', 'tuning_info' : 'high_quality', 'codec': 'h264', 
+                                        'profile' : 'main', 's': '1920x1080', 'bitrate' : '10M'}, 0)
         
         if self.output_rtsp is not None:
             write_to_rtsp_command = ['ffmpeg',
@@ -164,19 +125,6 @@ class VideoIO:
         # limit capture interval at processing latency for live sources
         return 1 / min(self.cap_fps, self.proc_fps) if self.is_live else 1 / self.cap_fps
 
-    def start_capture(self):
-        """Start capturing from file or device."""
-        if not self.cap_thread.is_alive():
-            self.cap_thread.start()
-
-    def stop_capture(self):
-        """Stop capturing from file or device."""
-        with self.cond:
-            self.exit_event.set()
-            self.cond.notify()
-        self.frame_queue.clear()
-        self.cap_thread.join()
-
     def read(self):
         """Reads the next video frame.
 
@@ -185,22 +133,40 @@ class VideoIO:
         ndarray
             Returns None if there are no more frames.
         """
-        with self.cond:
-            while len(self.frame_queue) == 0 and not self.exit_event.is_set():
-                self.cond.wait()
-            if len(self.frame_queue) == 0 and self.exit_event.is_set():
-                return None
-            frame = self.frame_queue.popleft()
-            self.cond.notify()
-        if self.do_resize:
-            frame = cv2.resize(frame, self.size)
+        if self.nvDec is None:
+            self.nvDec = nvc.PyNvDecoder(self.input_uri, 0, {'rtsp_transport': 'tcp', 
+            "max_delay": "5000000", "bufsize": "300000k"})
+           
+        self.rawSurface = self.nvDec.DecodeSingleSurface()
+        if (self.rawSurface.Empty()):
+            return None
+    
+        surface_yuv420 = self.nvCvtNv12ToYuv420.Execute(self.rawSurface, self.cc_ctx)
+        if surface_yuv420.Empty():
+            return None
+
+        surface_rgb = self.nvCvtYuv420ToBgr.Execute(surface_yuv420, self.cc_ctx)
+        if surface_rgb.Empty():
+            return None
+
+        frame = np.ndarray(shape=(self.size[1], self.size[0], 3), dtype=np.uint8)
+        success = self.nvDwn.DownloadSingleSurface(surface_rgb, frame)
+        if not (success):
+            return None
+
         return frame
+
+    def write_frame(self, frame):
+        self.writer.stdin.write(frame.tobytes())
 
     def write(self, frame):
         """Writes the next video frame."""
-        assert hasattr(self, 'writer')
-        self.writer.stdin.write(frame.tobytes())
+        encFrame = np.ndarray(shape=(0), dtype=np.uint8)
 
+        success = self.nvEnc.EncodeSingleSurface(self.rawSurface, encFrame)
+        if success:
+            frameByteArray = bytearray(encFrame)
+            self.output_file.write(frameByteArray)
 
     def write_rtsp(self, frame):
         """Writes the next video frame to rtsp server."""
@@ -208,18 +174,19 @@ class VideoIO:
 
     def release(self):
         """Cleans up input and output sources."""
-        self.stop_capture()
-        if hasattr(self, 'source'):
-            self.source.stdout.close()
-            self.source.wait()
-        if hasattr(self, 'writer'):
-            self.writer.stdin.close()
-            self.writer.wait()
+        if (self.nvEnc is not None):
+            encFrame = np.ndarray(shape=(0), dtype=np.uint8)
+            while True:
+                success = self.nvEnc.FlushSinglePacket(encFrame)
+                if(success):
+                    encByteArray = bytearray(encFrame)
+                    self.output_file.write(encByteArray)
+                else:
+                    break
+
         if hasattr(self, 'rtsp_writer_process'):
             self.rtsp_writer_process.stdin.close()
             self.rtsp_writer_process.wait()
-        return
-        self.source.release()
 
     def _gst_cap_pipeline(self):
         gst_elements = str(subprocess.check_output('gst-inspect-1.0'))
@@ -304,28 +271,6 @@ class VideoIO:
             )
         )
         return pipeline
-
-    def _capture_frames(self):
-        while not self.exit_event.is_set():
-            raw_image = self.source.stdout.read(self.size[0]*self.size[1]*3)
-            frame = np.fromstring(raw_image, dtype='uint8')
-            ret = frame.shape[0] == self.size[0] * self.size[1] * 3
-            if ret:
-                frame = frame.reshape((self.size[1], self.size[0], 3))
-            self.source.stdout.flush()
-
-            with self.cond:
-                if not ret:
-                    self.exit_event.set()
-                    self.cond.notify()
-                    break
-                # keep unprocessed frames in the buffer for file
-                if not self.is_live:
-                    while (len(self.frame_queue) == self.buffer_size and
-                           not self.exit_event.is_set()):
-                        self.cond.wait()
-                self.frame_queue.append(frame)
-                self.cond.notify()
 
     @staticmethod
     def _parse_uri(uri):
